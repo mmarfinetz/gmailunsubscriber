@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gmail Unsubscriber - Simplify Your Inbox</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="static/css/styles.css">
+</head>
+<body>
+    <header>
+        <div class="container header-content">
+            <div class="logo">
+                <img src="static/images/logo.svg" alt="Gmail Unsubscriber Logo" id="logo-placeholder">
+                <h1>Gmail Unsubscriber</h1>
+            </div>
+            <div class="user-info hidden" id="user-info">
+                <span id="user-email"></span>
+                <button class="btn" id="logout-btn">Logout</button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Authentication Section -->
+        <section class="auth-section" id="auth-section">
+            <div class="container">
+                <div class="auth-card">
+                    <h2>Simplify Your Inbox</h2>
+                    <p>Automatically unsubscribe from unwanted emails with just one click. Connect your Gmail account to get started.</p>
+                    <button class="btn btn-google" id="auth-btn">
+                        <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="Google Logo">
+                        Sign in with Google
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Dashboard Section (Hidden initially) -->
+        <section class="dashboard hidden" id="dashboard-section">
+            <div class="container">
+                <div class="dashboard-header">
+                    <h2>Your Unsubscription Dashboard</h2>
+                    <p>Monitor your email cleanup progress and statistics</p>
+                </div>
+
+                <div class="dashboard-cards">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Total Emails Scanned</h3>
+                            <div class="card-icon">
+                                <i class="fas fa-envelope"></i>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-number" id="total-scanned">0</div>
+                            <div class="stat-label">Emails</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Successfully Unsubscribed</h3>
+                            <div class="card-icon">
+                                <i class="fas fa-check-circle"></i>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-number" id="total-unsubscribed">0</div>
+                            <div class="stat-label">Emails</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Time Saved</h3>
+                            <div class="card-icon">
+                                <i class="fas fa-clock"></i>
+                            </div>
+                        </div>
+                        <div class="card-content">
+                            <div class="stat-number" id="time-saved">0</div>
+                            <div class="stat-label">Minutes</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="progress-section">
+                    <div class="progress-header">
+                        <h3>Unsubscription Progress</h3>
+                        <span id="progress-percentage">0%</span>
+                    </div>
+                    <div class="progress-bar-container">
+                        <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+                    </div>
+                    <div class="progress-stats">
+                        <span id="emails-processed">0 processed</span>
+                        <span id="emails-remaining">0 remaining</span>
+                    </div>
+                </div>
+
+                <div class="activity-section">
+                    <div class="activity-header">
+                        <h3>Recent Activity</h3>
+                    </div>
+                    <div class="activity-list" id="activity-list">
+                        <!-- Activity items will be added dynamically -->
+                        <div class="activity-item" id="activity-placeholder">
+                            <div class="activity-icon">
+                                <i class="fas fa-info-circle"></i>
+                            </div>
+                            <div class="activity-details">
+                                <div class="activity-message">Connect your Gmail account to see activity</div>
+                                <div class="activity-time">Just now</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- Action Button (Hidden initially) -->
+    <div class="action-button hidden" id="action-button">
+        <i class="fas fa-play"></i>
+    </div>
+
+    <!-- Run Modal -->
+    <div class="modal-overlay" id="run-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Run Unsubscription Process</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p>This will scan your Gmail inbox for subscription emails and attempt to unsubscribe from them automatically.</p>
+                
+                <div class="form-group">
+                    <label for="search-query">Search Query (Advanced Users)</label>
+                    <input type="text" class="form-control" id="search-query" 
+                           value='"unsubscribe" OR "email preferences" OR "opt-out" OR "subscription preferences"'>
+                    <small>This is the search query used to find subscription emails in your inbox.</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="max-emails">Maximum Emails to Process</label>
+                    <input type="number" class="form-control" id="max-emails" value="50" min="1" max="500">
+                    <small>Limit the number of emails to process in this run.</small>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancel-run">Cancel</button>
+                <button class="btn" id="start-run">Start</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Processing Modal -->
+    <div class="modal-overlay" id="processing-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>Processing Emails</h3>
+            </div>
+            <div class="modal-body text-center">
+                <div class="spinner mb-20"></div>
+                <p id="processing-status">Scanning your inbox for subscription emails...</p>
+                <div class="progress-bar-container mb-10">
+                    <div class="progress-bar" id="processing-progress-bar" style="width: 0%"></div>
+                </div>
+                <p id="processing-count">Processed: 0 / 0</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="stop-processing">Stop</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>
