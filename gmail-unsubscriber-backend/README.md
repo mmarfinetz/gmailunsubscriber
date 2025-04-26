@@ -26,8 +26,12 @@ This guide will help you set up and run the Gmail Unsubscriber application, whic
 8. Click "Create Credentials" > "OAuth client ID"
 9. Application type: Web application
 10. Name: Gmail Unsubscriber
-11. Authorized JavaScript origins: `http://localhost:5000`
-12. Authorized redirect URIs: `http://localhost:5000/oauth2callback`
+11. Authorized JavaScript origins: 
+    - Primary: `https://gmail-unsubscriber-frontend.vercel.app`
+    - Additional: `http://localhost:3000` (for local development)
+12. Authorized redirect URIs: 
+    - Primary: `https://gmail-unsubscriber-backend.vercel.app/oauth2callback`
+    - Additional: `http://localhost:3000/oauth2callback` (for local development)
 13. Click "Create"
 14. Download the JSON file
 
@@ -40,12 +44,17 @@ This guide will help you set up and run the Gmail Unsubscriber application, whic
    ```
 3. Create a `.env` file in the project root with the following content:
    ```
+   # For Production (Vercel deployment)
    SECRET_KEY=your_secret_key_here
    GOOGLE_CLIENT_ID=your_google_client_id
    GOOGLE_CLIENT_SECRET=your_google_client_secret
    GOOGLE_PROJECT_ID=your_google_project_id
-   REDIRECT_URI=http://localhost:5000/oauth2callback
-   FRONTEND_URL=http://localhost:8000
+   REDIRECT_URI=https://gmail-unsubscriber-backend.vercel.app/oauth2callback
+   FRONTEND_URL=https://gmail-unsubscriber-frontend.vercel.app
+   
+   # For Local Development (uncomment these lines)
+   # REDIRECT_URI=http://localhost:3000/oauth2callback
+   # FRONTEND_URL=http://localhost:3000
    ```
 4. Replace the placeholder values with your actual Google OAuth credentials
 
@@ -61,7 +70,9 @@ This guide will help you set up and run the Gmail Unsubscriber application, whic
    cd gmail-unsubscriber
    python -m http.server 8000
    ```
-3. Open your browser and navigate to `http://localhost:8000`
+3. Open your browser and navigate to:
+   - Local development: `http://localhost:8000` 
+   - Production: `https://gmail-unsubscriber-frontend.vercel.app`
 
 ## Usage
 

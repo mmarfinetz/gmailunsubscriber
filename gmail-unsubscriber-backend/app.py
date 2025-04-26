@@ -44,9 +44,27 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
 
 # Enable CORS with restricted origins
-frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:8000')
+frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+
+# Define allowed origins for CORS
+allowed_origins = [
+    frontend_url,
+    # Vercel deployment URLs (for backward compatibility)
+    'https://gmail-unsubscriber-frontend.vercel.app',
+    'https://gmail-unsubscriber-frontend-ftrl3114t-mmarfinetzs-projects.vercel.app',
+    'https://gmail-unsubscriber-frontend-cghhingxm-mmarfinetzs-projects.vercel.app',
+]
+
+# Add Railway domain patterns if environment is production
+if os.environ.get('ENVIRONMENT') == 'production':
+    # Allow Railway domains (*.railway.app)
+    allowed_origins.extend([
+        'https://*.railway.app',
+        # Add specific Railway domains if needed
+    ])
+
 CORS(app, 
-     origins=[frontend_url, 'https://gmail-unsubscriber-frontend-ftrl3114t-mmarfinetzs-projects.vercel.app', 'https://gmail-unsubscriber-frontend-cghhingxm-mmarfinetzs-projects.vercel.app'],
+     origins=allowed_origins,
      supports_credentials=True,
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "OPTIONS"])
@@ -69,7 +87,7 @@ CLIENT_CONFIG = {
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
         "client_secret": os.environ.get('GOOGLE_CLIENT_SECRET', ''),
-        "redirect_uris": [os.environ.get('REDIRECT_URI', 'http://localhost:5000/oauth2callback')]
+        "redirect_uris": [os.environ.get('REDIRECT_URI', 'https://gmail-unsubscriber-backend.vercel.app/oauth2callback')]
     }
 }
 
@@ -207,23 +225,8 @@ def oauth2callback():
         "exp": datetime.utcnow() + timedelta(days=5)
     }, app.secret_key, algorithm="HS256")
 
-    # Initialize user stats and activities
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0
-        }
-
-    if user_id not in user_activities:
-        user_activities[user_id] = [{
-            "type": "info",
-            "message": "Successfully connected Gmail account",
-            "time": datetime.now().isoformat()
-        }]
-
     # Redirect to frontend with token
-    frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:8000')
+    frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
     return redirect(f"{frontend_url}?auth=success&email={user_id}&token={token}")
 
 @app.route('/api/auth/logout', methods=['POST'])

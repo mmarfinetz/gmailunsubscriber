@@ -4,6 +4,7 @@
 - Backend: `cd gmail-unsubscriber-backend && python app.py`
 - Frontend: `cd gmail-unsubscriber && python -m http.server 8000`
 - API Testing: `curl -v http://localhost:5000/api/auth/status`
+- Production API: `curl -v https://gmail-unsubscriber-backend.vercel.app/api/auth/status`
 
 ## Environment Setup
 - Backend dependencies: `pip install -r gmail-unsubscriber-backend/requirements.txt`
