@@ -9,7 +9,7 @@
  */
 
 // Configuration
-const API_BASE_URL = 'https://gmail-unsubscriber-backend.vercel.app';
+const API_BASE_URL = window.VITE_API_URL || window.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5000';
 
 // DOM Elements
 const authSection = document.getElementById('auth-section');
@@ -63,15 +63,17 @@ function checkAuthCallback() {
     const urlParams = new URLSearchParams(window.location.search);
     const authStatus = urlParams.get('auth');
     const email = urlParams.get('email');
-    
-    if (authStatus === 'success' && email) {
+    const token = urlParams.get('token');
+
+    if (authStatus === 'success' && email && token) {
         // Clear URL parameters
         window.history.replaceState({}, document.title, window.location.pathname);
-        
+
         // Update UI
         userEmail.textContent = email;
+        localStorage.setItem('auth_token', token);
         showDashboard();
-        
+
         // Load user data
         loadUserData();
     }
@@ -79,9 +81,10 @@ function checkAuthCallback() {
 
 // Check if user is authenticated
 function checkAuthStatus() {
+    const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/auth/status`, {
         method: 'GET',
-        credentials: 'include'
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
     })
     .then(response => response.json())
     .then(data => {
@@ -155,13 +158,15 @@ function handleAuth() {
 
 // Handle user logout
 function handleLogout() {
+    const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: 'POST',
-        credentials: 'include'
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
     })
     .then(response => response.json())
     .then(data => {
         if (data.success) {
+            localStorage.removeItem('auth_token');
             showAuthScreen();
         }
     })
@@ -189,9 +194,11 @@ function showAuthScreen() {
 // Load user data (stats and activities)
 function loadUserData() {
     // Load stats
+    const token = localStorage.getItem('auth_token');
+    const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     fetch(`${API_BASE_URL}/api/stats`, {
         method: 'GET',
-        credentials: 'include'
+        headers
     })
     .then(response => response.json())
     .then(data => {
@@ -204,7 +211,7 @@ function loadUserData() {
     // Load activities
     fetch(`${API_BASE_URL}/api/activities`, {
         method: 'GET',
-        credentials: 'include'
+        headers
     })
     .then(response => response.json())
     .then(activities => {
@@ -341,12 +348,12 @@ function startUnsubscriptionProcess() {
     processingProgressBar.style.width = '0%';
     
     // Call backend API
+    const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/unsubscribe/start`, {
         method: 'POST',
-        headers: {
+        headers: Object.assign({
             'Content-Type': 'application/json'
-        },
-        credentials: 'include',
+        }, token ? { 'Authorization': `Bearer ${token}` } : {}),
         body: JSON.stringify({
             search_query: searchQuery,
             max_emails: maxEmails
@@ -387,9 +394,10 @@ function startStatusPolling() {
         }
         
         // Call status API
+        const token = localStorage.getItem('auth_token');
         fetch(`${API_BASE_URL}/api/unsubscribe/status`, {
             method: 'GET',
-            credentials: 'include'
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
         })
         .then(response => response.json())
         .then(data => {
@@ -457,9 +465,10 @@ function finishUnsubscriptionProcess() {
     loadUserData();
     
     // Show completion message
+    const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/stats`, {
         method: 'GET',
-        credentials: 'include'
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
     })
     .then(response => response.json())
     .then(stats => {
