@@ -14,7 +14,8 @@ import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, request, jsonify, redirect, session, url_for
+from flask import Flask, request, jsonify, redirect, g
+import jwt
 from flask_cors import CORS
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
@@ -41,12 +42,6 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
-app.config['SESSION_TYPE'] = 'filesystem'
-app.config['SESSION_PERMANENT'] = True
-app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=5)
-app.config['SESSION_COOKIE_SECURE'] = True
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'
 
 # Enable CORS with restricted origins
 frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:8000')
@@ -61,11 +56,9 @@ SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
 API_SERVICE_NAME = 'gmail'
 API_VERSION = 'v1'
 
-# Store user credentials in memory (for demo purposes)
-# In production, use a proper database
-user_credentials = {}
 user_stats = {}
 user_activities = {}
+oauth_states = set()
 
 # Authentication configuration
 CLIENT_CONFIG = {
@@ -85,37 +78,61 @@ if os.environ.get('ENVIRONMENT') == 'development':
     with open('client_secrets.json', 'w') as f:
         json.dump(CLIENT_CONFIG, f)
 
-# Helper function to check if user is authenticated
-def is_authenticated(user_id):
-    if user_id not in user_credentials:
-        return False
-    
-    creds = Credentials.from_authorized_user_info(user_credentials[user_id], SCOPES)
-    
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
+def decode_token(token):
+    """Decode a JWT token and return its payload or None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, app.secret_key, algorithms=["HS256"])
+        return payload
+    except Exception as e:
+        logger.error(f"Invalid token: {e}")
+        return None
+
+def is_authenticated(token):
+    """Validate token and refresh Gmail credentials if needed."""
+    payload = decode_token(token)
+    if not payload:
+        return None
+
+    creds_data = payload.get("credentials")
+    if not creds_data:
+        return None
+
+    creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
-                user_credentials[user_id] = json.loads(creds.to_json())
-                return True
+                payload["credentials"] = json.loads(creds.to_json())
             except Exception as e:
                 logger.error(f"Error refreshing credentials: {e}")
-                return False
-        return False
-    
-    return True
+                return None
+        else:
+            return None
+
+    return payload
 
 # Authentication required decorator
 def auth_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        user_id = session.get('user_id')
-        
-        if not user_id or not is_authenticated(user_id):
+        auth_header = request.headers.get('Authorization', '')
+        token = None
+        if auth_header.startswith('Bearer '):
+            token = auth_header.split(' ', 1)[1].strip()
+        else:
+            token = request.args.get('token')
+
+        payload = is_authenticated(token)
+        if not payload:
             return jsonify({"error": "Authentication required"}), 401
-        
+
+        g.user_id = payload.get('user_id')
+        g.credentials = payload.get('credentials')
         return f(*args, **kwargs)
-    
+
     return decorated_function
 
 # Routes
@@ -136,20 +153,20 @@ def login():
         prompt='consent'
     )
     
-    # Store the state in the session
-    session['state'] = state
-    
-    # Redirect the user to Google's OAuth 2.0 server
+    # Keep track of the state to validate the callback
+    oauth_states.add(state)
+
+    # Return the authorization URL to the frontend
     return jsonify({"auth_url": authorization_url})
 
 @app.route('/oauth2callback')
 def oauth2callback():
     """Handle the OAuth2 callback from Google."""
-    # Specify the state when creating the flow in the callback
+    # Validate the OAuth state
     state = request.args.get('state', '')
-    
-    if state != session.get('state', ''):
+    if state not in oauth_states:
         return jsonify({"error": "Invalid state parameter"}), 401
+    oauth_states.discard(state)
     
     flow = Flow.from_client_config(
         CLIENT_CONFIG,
@@ -162,13 +179,11 @@ def oauth2callback():
     authorization_response = request.url
     flow.fetch_token(authorization_response=authorization_response)
     
-    # Store credentials in the session
     credentials = flow.credentials
     user_info = get_user_info(credentials)
     user_id = user_info['email']
-    
-    # Store in our server-side storage
-    user_credentials[user_id] = json.loads(credentials.to_json())
+
+    creds_dict = json.loads(credentials.to_json())
     
     # Initialize user stats and activities
     if user_id not in user_stats:
@@ -185,44 +200,60 @@ def oauth2callback():
             "time": datetime.now().isoformat()
         }]
     
-    # Store user ID in session
-    session['user_id'] = user_id
-    
-    # Redirect to frontend
-    frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend-ftrl3114t-mmarfinetzs-projects.vercel.app')
-    return redirect(f"{frontend_url}?auth=success&email={user_id}")
+    # Create JWT token containing the credentials
+    token = jwt.encode({
+        "user_id": user_id,
+        "credentials": creds_dict,
+        "exp": datetime.utcnow() + timedelta(days=5)
+    }, app.secret_key, algorithm="HS256")
+
+    # Initialize user stats and activities
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0
+        }
+
+    if user_id not in user_activities:
+        user_activities[user_id] = [{
+            "type": "info",
+            "message": "Successfully connected Gmail account",
+            "time": datetime.now().isoformat()
+        }]
+
+    # Redirect to frontend with token
+    frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:8000')
+    return redirect(f"{frontend_url}?auth=success&email={user_id}&token={token}")
 
 @app.route('/api/auth/logout', methods=['POST'])
 @auth_required
 def logout():
-    """Log out the user by clearing their session."""
-    user_id = session.get('user_id')
-    
-    if user_id in user_credentials:
-        del user_credentials[user_id]
-    
-    session.clear()
-    
-    return jsonify({"success": True, "message": "Logged out successfully"})
+    """Client-side logout. No server state is stored."""
+    return jsonify({"success": True, "message": "Logged out"})
 
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
-    """Check if the user is authenticated."""
-    user_id = session.get('user_id')
-    
-    if user_id and is_authenticated(user_id):
+    """Check if the request contains a valid auth token."""
+    auth_header = request.headers.get('Authorization', '')
+    token = None
+    if auth_header.startswith('Bearer '):
+        token = auth_header.split(' ', 1)[1].strip()
+
+    payload = is_authenticated(token)
+    if payload:
         return jsonify({
             "authenticated": True,
-            "email": user_id
+            "email": payload.get('user_id')
         })
-    
+
     return jsonify({"authenticated": False})
 
 @app.route('/api/stats', methods=['GET'])
 @auth_required
 def get_stats():
     """Get the user's unsubscription statistics."""
-    user_id = session.get('user_id')
+    user_id = g.get('user_id')
     
     return jsonify(user_stats.get(user_id, {
         "total_scanned": 0,
@@ -234,7 +265,7 @@ def get_stats():
 @auth_required
 def get_activities():
     """Get the user's recent activities."""
-    user_id = session.get('user_id')
+    user_id = g.get('user_id')
     
     return jsonify(user_activities.get(user_id, []))
 
@@ -242,7 +273,7 @@ def get_activities():
 @auth_required
 def start_unsubscription():
     """Start the unsubscription process."""
-    user_id = session.get('user_id')
+    user_id = g.get('user_id')
     data = request.json
     
     search_query = data.get('search_query', '"unsubscribe" OR "email preferences" OR "opt-out" OR "subscription preferences"')
@@ -254,7 +285,7 @@ def start_unsubscription():
     # Start the process in a background thread (in a real app)
     # For demo purposes, we'll do it synchronously
     try:
-        process_unsubscriptions(user_id, search_query, max_emails)
+        process_unsubscriptions(user_id, search_query, max_emails, g.credentials)
         return jsonify({"success": True, "message": "Unsubscription process completed"})
     except Exception as e:
         logger.error(f"Error in unsubscription process: {e}")
@@ -265,7 +296,7 @@ def start_unsubscription():
 @auth_required
 def get_unsubscription_status():
     """Get the status of the unsubscription process."""
-    user_id = session.get('user_id')
+    user_id = g.get('user_id')
     
     # In a real app, this would check the status of the background process
     # For demo purposes, we'll just return the stats
@@ -300,12 +331,16 @@ def add_activity(user_id, activity_type, message):
     
     return activity
 
-def process_unsubscriptions(user_id, query, max_emails):
+def process_unsubscriptions(user_id, query, max_emails, creds_data):
     """Process unsubscriptions for the user."""
-    if not is_authenticated(user_id):
-        raise Exception("User not authenticated")
-    
-    creds = Credentials.from_authorized_user_info(user_credentials[user_id], SCOPES)
+    creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
+    if not creds.valid and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+            creds_data.update(json.loads(creds.to_json()))
+        except Exception as e:
+            logger.error(f"Error refreshing credentials: {e}")
+            raise
     service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
     
     # Search for emails
