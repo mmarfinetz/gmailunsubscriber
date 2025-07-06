@@ -471,11 +471,11 @@ def execute_unsub(link):
     
     return False
 
+# Check if environment variables are set
+if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
+    logger.warning("Google OAuth credentials not set. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
+
 if __name__ == '__main__':
-    # Check if environment variables are set
-    if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
-        logger.warning("Google OAuth credentials not set. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
-    
     # Run the Flask app
     debug_mode = os.environ.get('ENVIRONMENT') == 'development'
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
