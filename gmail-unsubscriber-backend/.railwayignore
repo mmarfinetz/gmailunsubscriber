@@ -1,0 +1,41 @@
+# Railway ignore file - exclude files from deployment
+
+# Development files
+*.md
+README.md
+DEPLOYMENT.md
+USER_GUIDE.md
+API_DOCS.md
+
+# Vercel specific files
+vercel.json
+requirements-vercel.txt
+app.yaml
+
+# Local environment files
+.env.local
+.env.development
+
+# Logs
+*.log
+backend.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
