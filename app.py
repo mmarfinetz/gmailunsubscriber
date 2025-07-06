@@ -154,6 +154,15 @@ def auth_required(f):
     return decorated_function
 
 # Routes
+@app.route('/', methods=['GET'])
+def health_check():
+    """Health check endpoint."""
+    return jsonify({
+        "message": "Gmail Unsubscriber API",
+        "status": "running",
+        "version": "1.0.0"
+    })
+
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """Initiate the OAuth2 authorization flow."""
