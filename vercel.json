@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "name": "gmail-unsubscriber-frontend",
+  "builds": [
+    {
+      "src": "gmail-unsubscriber/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "/gmail-unsubscriber/$1"
+    }
+  ],
+  "rootDirectory": "gmail-unsubscriber"
+}
