@@ -181,21 +181,40 @@ def login():
 def oauth2callback():
     """Handle the OAuth2 callback from Google."""
     try:
+        logger.info("OAuth callback initiated")
+        logger.info(f"Request URL: {request.url}")
+        logger.info(f"Request args: {dict(request.args)}")
+        
         # Validate the OAuth state
         state = request.args.get('state', '')
+        logger.info(f"OAuth state received: {state}")
+        
         if state not in oauth_states:
             logger.warning(f"OAuth state not found in memory (possibly due to app restart): {state}")
+            logger.info(f"Current oauth_states in memory: {oauth_states}")
             # In production, you might want to be more strict about state validation
             # For now, we'll allow it to continue if the state exists but isn't in memory
         else:
             oauth_states.discard(state)
+            logger.info(f"OAuth state validated and removed from memory")
         
         # Check for OAuth error
         error = request.args.get('error')
         if error:
-            logger.error(f"OAuth error: {error}")
+            logger.error(f"OAuth error from Google: {error}")
             frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
             return redirect(f"{frontend_url}?auth=error&error={error}")
+        
+        logger.info("Creating OAuth flow")
+        # Log CLIENT_CONFIG without sensitive data
+        safe_config = {
+            "web": {
+                "client_id": CLIENT_CONFIG['web']['client_id'][:20] + "...",
+                "project_id": CLIENT_CONFIG['web']['project_id'],
+                "redirect_uris": CLIENT_CONFIG['web']['redirect_uris']
+            }
+        }
+        logger.info(f"CLIENT_CONFIG (redacted): {safe_config}")
         
         flow = Flow.from_client_config(
             CLIENT_CONFIG,
@@ -203,16 +222,27 @@ def oauth2callback():
             state=state,
             redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
         )
+        logger.info("OAuth flow created successfully")
         
         # Use the authorization server's response to fetch the OAuth 2.0 tokens
         authorization_response = request.url
+        logger.info(f"Authorization response URL: {authorization_response}")
+        
+        logger.info("Fetching OAuth tokens")
         flow.fetch_token(authorization_response=authorization_response)
+        logger.info("OAuth tokens fetched successfully")
         
         credentials = flow.credentials
+        logger.info("Getting user info")
         user_info = get_user_info(credentials)
+        logger.info(f"User info retrieved: {user_info}")
+        
         user_id = user_info['email']
+        logger.info(f"User ID: {user_id}")
 
+        logger.info("Converting credentials to JSON")
         creds_dict = json.loads(credentials.to_json())
+        logger.info("Credentials converted successfully")
         
         # Initialize user stats and activities
         if user_id not in user_stats:
@@ -221,6 +251,7 @@ def oauth2callback():
                 "total_unsubscribed": 0,
                 "time_saved": 0
             }
+            logger.info(f"Initialized stats for user: {user_id}")
         
         if user_id not in user_activities:
             user_activities[user_id] = [{
@@ -228,20 +259,28 @@ def oauth2callback():
                 "message": "Successfully connected Gmail account",
                 "time": datetime.now().isoformat()
             }]
+            logger.info(f"Initialized activities for user: {user_id}")
         
         # Create JWT token containing the credentials
+        logger.info("Creating JWT token")
         token = jwt.encode({
             "user_id": user_id,
             "credentials": creds_dict,
             "exp": datetime.utcnow() + timedelta(days=5)
         }, app.secret_key, algorithm="HS256")
+        logger.info("JWT token created successfully")
 
         # Redirect to frontend with token
         frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-        return redirect(f"{frontend_url}?auth=success&email={user_id}&token={token}")
+        redirect_url = f"{frontend_url}?auth=success&email={user_id}&token={token}"
+        logger.info(f"Redirecting to: {redirect_url}")
+        return redirect(redirect_url)
         
     except Exception as e:
         logger.error(f"OAuth callback error: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
         return redirect(f"{frontend_url}?auth=error&error=callback_failed")
 
