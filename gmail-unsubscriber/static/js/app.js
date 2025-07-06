@@ -9,7 +9,7 @@
  */
 
 // Configuration
-const API_BASE_URL = window.VITE_API_URL || window.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:5000';
+const API_BASE_URL = window.VITE_API_URL || window.NEXT_PUBLIC_API_BASE_URL || 'https://gmailunsubscriber-production.up.railway.app';
 
 // DOM Elements
 const authSection = document.getElementById('auth-section');
