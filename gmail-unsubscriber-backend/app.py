@@ -154,6 +154,15 @@ def auth_required(f):
     return decorated_function
 
 # Routes
+@app.route('/')
+def health_check():
+    """Health check endpoint for Railway."""
+    return jsonify({
+        "status": "healthy",
+        "service": "gmail-unsubscriber-backend",
+        "timestamp": datetime.now().isoformat()
+    })
+
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """Initiate the OAuth2 authorization flow."""
@@ -282,8 +291,19 @@ def oauth2callback():
         logger.error(f"Error type: {type(e).__name__}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Add environment variable debugging
+        logger.error(f"Environment check: CLIENT_ID exists: {bool(os.environ.get('GOOGLE_CLIENT_ID'))}")
+        logger.error(f"Environment check: CLIENT_SECRET exists: {bool(os.environ.get('GOOGLE_CLIENT_SECRET'))}")
+        logger.error(f"Environment check: PROJECT_ID exists: {bool(os.environ.get('GOOGLE_PROJECT_ID'))}")
+        logger.error(f"Environment check: SECRET_KEY exists: {bool(os.environ.get('SECRET_KEY'))}")
+        logger.error(f"Environment check: REDIRECT_URI: {os.environ.get('REDIRECT_URI', 'NOT SET')}")
+        logger.error(f"Environment check: ENVIRONMENT: {os.environ.get('ENVIRONMENT', 'NOT SET')}")
+        
+        # Include error type in redirect for debugging
+        error_type = type(e).__name__
         frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-        return redirect(f"{frontend_url}?auth=error&error=callback_failed")
+        return redirect(f"{frontend_url}?auth=error&error=callback_failed&details={error_type}")
 
 @app.route('/api/auth/logout', methods=['POST'])
 @auth_required
@@ -307,6 +327,21 @@ def auth_status():
         })
 
     return jsonify({"authenticated": False})
+
+@app.route('/api/debug/env', methods=['GET'])
+def debug_env():
+    """Debug endpoint to check environment variables."""
+    return jsonify({
+        "has_client_id": bool(os.environ.get('GOOGLE_CLIENT_ID')),
+        "has_client_secret": bool(os.environ.get('GOOGLE_CLIENT_SECRET')),
+        "has_project_id": bool(os.environ.get('GOOGLE_PROJECT_ID')),
+        "has_secret_key": bool(os.environ.get('SECRET_KEY')),
+        "redirect_uri": os.environ.get('REDIRECT_URI', 'NOT SET'),
+        "frontend_url": os.environ.get('FRONTEND_URL', 'NOT SET'),
+        "environment": os.environ.get('ENVIRONMENT', 'NOT SET'),
+        "client_id_length": len(os.environ.get('GOOGLE_CLIENT_ID', '')),
+        "project_id": os.environ.get('GOOGLE_PROJECT_ID', 'NOT SET')
+    })
 
 @app.route('/api/stats', methods=['GET'])
 @auth_required
@@ -368,13 +403,33 @@ def get_unsubscription_status():
 def get_user_info(credentials):
     """Get the user's email address from their Google account."""
     try:
-        service = build('oauth2', 'v2', credentials=credentials)
-        user_info = service.userinfo().get().execute()
+        # Use the Google OAuth2 API to get user info
+        from google.auth.transport.requests import Request as AuthRequest
+        import requests as req
+        
+        # Get access token from credentials
+        if not credentials.valid:
+            if credentials.expired and credentials.refresh_token:
+                credentials.refresh(AuthRequest())
+        
+        # Make direct request to Google's userinfo endpoint
+        headers = {'Authorization': f'Bearer {credentials.token}'}
+        response = req.get('https://www.googleapis.com/oauth2/v2/userinfo', headers=headers)
+        
+        if response.status_code != 200:
+            raise ValueError(f"Failed to get user info: {response.status_code} - {response.text}")
+        
+        user_info = response.json()
         if 'email' not in user_info:
             raise ValueError("No email found in user info")
+        
+        logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
         return user_info
     except Exception as e:
         logger.error(f"Error getting user info: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 def add_activity(user_id, activity_type, message):
@@ -524,11 +579,11 @@ def execute_unsub(link):
     
     return False
 
+# Check if environment variables are set on startup
+if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
+    logger.warning("Google OAuth credentials not set. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
+
 if __name__ == '__main__':
-    # Check if environment variables are set
-    if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
-        logger.warning("Google OAuth credentials not set. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
-    
     # Run the Flask app
     debug_mode = os.environ.get('ENVIRONMENT') == 'development'
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
