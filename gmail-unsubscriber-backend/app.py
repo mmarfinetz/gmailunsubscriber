@@ -192,6 +192,7 @@ def oauth2callback():
         if state not in oauth_states:
             logger.warning(f"OAuth state not found in memory (possibly due to app restart): {state}")
             logger.info(f"Current oauth_states in memory: {oauth_states}")
+            logger.info("Continuing with OAuth flow despite missing state (Railway restart tolerance)")
             # In production, you might want to be more strict about state validation
             # For now, we'll allow it to continue if the state exists but isn't in memory
         else:
