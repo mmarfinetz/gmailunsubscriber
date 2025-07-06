@@ -6,6 +6,6 @@
     { "src": "/(.*)", "dest": "/index.html" }
   ],
   "env": {
-    "NEXT_PUBLIC_API_BASE_URL": "https://gmail-unsubscriber-backend-8tk7zqvbi-mmarfinetzs-projects.vercel.app"
+    "NEXT_PUBLIC_API_BASE_URL": "https://gmailunsubscriber-production.up.railway.app"
   }
 }
