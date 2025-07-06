@@ -1,8 +1,8 @@
 [build]
-command = "cd gmail-unsubscriber-backend && pip install -r requirements.txt"
+command = "pip install -r requirements.txt"
 
 [deploy]
-startCommand = "cd gmail-unsubscriber-backend && gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
+startCommand = "gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120"
 
 [variables]
 NIXPACKS_PYTHON_VERSION = "3.11"
