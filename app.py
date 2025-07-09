@@ -191,9 +191,18 @@ def oauth2callback():
     """Handle the OAuth2 callback from Google."""
     # Validate the OAuth state
     state = request.args.get('state', '')
-    if state not in oauth_states:
-        return jsonify({"error": "Invalid state parameter"}), 401
-    oauth_states.discard(state)
+    
+    # Skip state validation for Railway production environment due to stateless architecture
+    if os.environ.get('ENVIRONMENT') == 'production':
+        logger.info("Production environment: Skipping state validation due to Railway's stateless architecture")
+    else:
+        # For development, still validate state
+        if state not in oauth_states:
+            logger.error(f"OAuth state not found in memory: {state}")
+            return jsonify({"error": "Invalid state parameter"}), 401
+        else:
+            oauth_states.discard(state)
+            logger.info(f"OAuth state validated and removed from memory")
     
     flow = Flow.from_client_config(
         CLIENT_CONFIG,
