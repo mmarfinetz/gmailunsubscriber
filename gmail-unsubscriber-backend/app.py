@@ -198,15 +198,18 @@ def oauth2callback():
         state = request.args.get('state', '')
         logger.info(f"OAuth state received: {state}")
         
-        if state not in oauth_states:
-            logger.warning(f"OAuth state not found in memory (possibly due to app restart): {state}")
-            logger.info(f"Current oauth_states in memory: {oauth_states}")
-            logger.info("Continuing with OAuth flow despite missing state (Railway restart tolerance)")
-            # In production, you might want to be more strict about state validation
-            # For now, we'll allow it to continue if the state exists but isn't in memory
+        # Skip state validation for Railway production environment due to stateless architecture
+        if os.environ.get('ENVIRONMENT') == 'production':
+            logger.info("Production environment: Skipping state validation due to Railway's stateless architecture")
         else:
-            oauth_states.discard(state)
-            logger.info(f"OAuth state validated and removed from memory")
+            # For development, still validate state
+            if state not in oauth_states:
+                logger.error(f"OAuth state not found in memory: {state}")
+                frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+                return redirect(f"{frontend_url}?auth=error&error=invalid_state")
+            else:
+                oauth_states.discard(state)
+                logger.info(f"OAuth state validated and removed from memory")
         
         # Check for OAuth error
         error = request.args.get('error')
@@ -276,7 +279,7 @@ def oauth2callback():
         token = jwt.encode({
             "user_id": user_id,
             "credentials": creds_dict,
-            "exp": datetime.utcnow() + timedelta(days=5)
+            "exp": datetime.now().replace(tzinfo=None) + timedelta(days=5)
         }, app.secret_key, algorithm="HS256")
         logger.info("JWT token created successfully")
 
@@ -303,7 +306,16 @@ def oauth2callback():
         # Include error type in redirect for debugging
         error_type = type(e).__name__
         frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-        return redirect(f"{frontend_url}?auth=error&error=callback_failed&details={error_type}")
+        
+        # Return JSON error response for API calls or redirect for web requests
+        if request.headers.get('Accept') == 'application/json':
+            return jsonify({
+                "error": "OAuth callback failed",
+                "error_type": error_type,
+                "message": str(e)
+            }), 500
+        else:
+            return redirect(f"{frontend_url}?auth=error&error=callback_failed&details={error_type}")
 
 @app.route('/api/auth/logout', methods=['POST'])
 @auth_required
