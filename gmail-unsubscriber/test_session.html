@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Session Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        button { margin: 10px; padding: 10px; }
+        pre { background: #f0f0f0; padding: 10px; }
+        .success { color: green; }
+        .error { color: red; }
+    </style>
+</head>
+<body>
+    <h1>OAuth Session Test</h1>
+    
+    <div>
+        <h2>Current Location</h2>
+        <pre id="location-info"></pre>
+    </div>
+    
+    <div>
+        <h2>API Configuration</h2>
+        <pre id="api-info"></pre>
+    </div>
+    
+    <div>
+        <h2>Actions</h2>
+        <button onclick="testSessionDebug()">Test Session Debug</button>
+        <button onclick="testLogin()">Test Login</button>
+        <button onclick="clearCookies()">Clear Cookies</button>
+    </div>
+    
+    <div>
+        <h2>Results</h2>
+        <pre id="results"></pre>
+    </div>
+    
+    <script>
+        // Show current location info
+        document.getElementById('location-info').textContent = JSON.stringify({
+            hostname: window.location.hostname,
+            port: window.location.port,
+            protocol: window.location.protocol,
+            href: window.location.href
+        }, null, 2);
+        
+        // Determine API URL
+        const API_BASE_URL = 'http://localhost:5000';
+        document.getElementById('api-info').textContent = `API URL: ${API_BASE_URL}`;
+        
+        function addResult(message, isError = false) {
+            const results = document.getElementById('results');
+            const timestamp = new Date().toISOString();
+            const className = isError ? 'error' : 'success';
+            results.innerHTML += `<div class="${className}">[${timestamp}] ${message}</div>\n`;
+        }
+        
+        async function testSessionDebug() {
+            try {
+                addResult('Testing session debug endpoint...');
+                const response = await fetch(`${API_BASE_URL}/api/session/debug`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                const data = await response.json();
+                addResult('Session debug response:\n' + JSON.stringify(data, null, 2));
+            } catch (error) {
+                addResult('Error: ' + error.message, true);
+            }
+        }
+        
+        async function testLogin() {
+            try {
+                addResult('Testing login endpoint...');
+                const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+                    method: 'GET',
+                    credentials: 'include',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                const data = await response.json();
+                addResult('Login response:\n' + JSON.stringify(data, null, 2));
+                
+                // Test session debug again
+                await testSessionDebug();
+            } catch (error) {
+                addResult('Error: ' + error.message, true);
+            }
+        }
+        
+        function clearCookies() {
+            document.cookie.split(";").forEach(function(c) { 
+                document.cookie = c.replace(/^ +/, "").replace(/=.*/, "=;expires=" + new Date().toUTCString() + ";path=/"); 
+            });
+            addResult('Cookies cleared');
+        }
+    </script>
+</body>
+</html>

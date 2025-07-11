@@ -14,7 +14,7 @@ import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 
-from flask import Flask, request, jsonify, redirect, g
+from flask import Flask, request, jsonify, redirect, g, session
 import jwt
 from flask_cors import CORS
 from google.oauth2.credentials import Credentials
@@ -28,6 +28,16 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Set insecure transport for OAuth in development only
+# WARNING: This should NEVER be enabled in production!
+if os.environ.get('ENVIRONMENT') == 'development' or (
+    os.environ.get('ENVIRONMENT') is None and 
+    os.environ.get('FRONTEND_URL', '').startswith('http://localhost')
+):
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    print("WARNING: Running in development mode with OAUTHLIB_INSECURE_TRANSPORT enabled.")
+    print("This allows OAuth over HTTP but should NEVER be used in production!")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -39,9 +49,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log insecure transport warning if enabled
+if os.environ.get('OAUTHLIB_INSECURE_TRANSPORT') == '1':
+    logger.warning("OAUTHLIB_INSECURE_TRANSPORT is enabled - OAuth will work over HTTP.")
+    logger.warning("This is for development only and must NOT be used in production!")
+
+# Import Claude chat functionality
+try:
+    from chat import chat_simple, chat_with_gmail_context, ask_claude
+    CLAUDE_AVAILABLE = True
+    logger.info("Claude chat module loaded successfully")
+except Exception as e:
+    CLAUDE_AVAILABLE = False
+    logger.warning(f"Claude chat module not available: {e}")
+
+# Create OAuth debug logger
+oauth_logger = logging.getLogger('oauth_debug')
+oauth_logger.setLevel(logging.DEBUG)
+handler = logging.StreamHandler()
+handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+oauth_logger.addHandler(handler)
+
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
+
+# Configure Flask session for OAuth state management
+app.config.update(
+    SESSION_COOKIE_SECURE=False,  # Set to True for HTTPS in production
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE='Lax',  # Critical for OAuth redirects
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
+    SESSION_COOKIE_DOMAIN=None,  # Don't set for localhost development
+    SESSION_COOKIE_NAME='gmail_unsubscriber_session',  # Custom session name
+    SESSION_COOKIE_PATH='/'  # Ensure cookie is available for all paths
+)
 
 # Enable CORS with restricted origins
 frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
@@ -53,15 +95,25 @@ allowed_origins = [
     'https://gmail-unsubscriber-frontend.vercel.app',
     'https://gmail-unsubscriber-frontend-ftrl3114t-mmarfinetzs-projects.vercel.app',
     'https://gmail-unsubscriber-frontend-cghhingxm-mmarfinetzs-projects.vercel.app',
+    # Railway deployment URLs
+    'https://gmailunsubscriber-production.up.railway.app',
+    'https://gmail-unsubscriber-backend.up.railway.app',
+    # Regex pattern for all Railway subdomains
+    r'^https://.*\.railway\.app$',
 ]
 
-# Add Railway domain patterns if environment is production
-if os.environ.get('ENVIRONMENT') == 'production':
-    # Allow Railway domains (*.railway.app)
+# Add localhost origins for development
+if os.environ.get('ENVIRONMENT') == 'development':
     allowed_origins.extend([
-        'https://*.railway.app',
-        # Add specific Railway domains if needed
+        'http://localhost:8000',
+        'http://127.0.0.1:8000',
+        'http://localhost:3000',  # Common React dev server port
+        'http://127.0.0.1:3000',
+        'http://[::1]:8000',  # IPv6 localhost
+        'http://[::]:8000',  # IPv6 all interfaces
+        r'^http://\[.*\]:8000$',  # Regex for any IPv6 address on port 8000
     ])
+    oauth_logger.debug(f"Development mode: Added localhost origins to CORS")
 
 CORS(app, 
      origins=allowed_origins,
@@ -70,7 +122,11 @@ CORS(app,
      methods=["GET", "POST", "OPTIONS"])
 
 # Gmail API settings
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SCOPES = [
+    'openid',  # Google automatically adds this when requesting userinfo.email
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/userinfo.email'
+]
 API_SERVICE_NAME = 'gmail'
 API_VERSION = 'v1'
 
@@ -95,6 +151,36 @@ CLIENT_CONFIG = {
 if os.environ.get('ENVIRONMENT') == 'development':
     with open('client_secrets.json', 'w') as f:
         json.dump(CLIENT_CONFIG, f)
+
+def get_redirect_uri(request):
+    """Determine the correct redirect URI based on the request origin."""
+    # Get the host from the request
+    host = request.headers.get('Host', 'localhost:5000')
+    
+    # Get the scheme (http or https)
+    scheme = 'https' if request.is_secure else 'http'
+    
+    # Handle X-Forwarded headers for proxy/load balancer scenarios
+    forwarded_proto = request.headers.get('X-Forwarded-Proto')
+    if forwarded_proto:
+        scheme = forwarded_proto
+    
+    forwarded_host = request.headers.get('X-Forwarded-Host')
+    if forwarded_host:
+        host = forwarded_host
+    
+    # For local development, always use localhost:5000 for consistency
+    # This ensures the OAuth callback matches regardless of how the frontend is accessed
+    if host in ['[::1]:5000', '[::]:5000', '127.0.0.1:5000'] or 'localhost' in host:
+        host = 'localhost:5000'
+    
+    # Construct the redirect URI
+    redirect_uri = f"{scheme}://{host}/oauth2callback"
+    
+    oauth_logger.debug(f"Determined redirect URI: {redirect_uri}")
+    oauth_logger.debug(f"Request headers - Host: {request.headers.get('Host')}, X-Forwarded-Host: {forwarded_host}, X-Forwarded-Proto: {forwarded_proto}")
+    
+    return redirect_uri
 
 def decode_token(token):
     """Decode a JWT token and return its payload or None."""
@@ -163,15 +249,69 @@ def health_check():
         "timestamp": datetime.now().isoformat()
     })
 
+@app.before_request
+def log_oauth_debug():
+    """Debug logging for OAuth-related requests."""
+    if request.path.startswith(('/oauth', '/api/auth')):
+        oauth_logger.debug(f"=== {request.method} {request.path} ===")
+        oauth_logger.debug(f"Request args: {dict(request.args)}")
+        oauth_logger.debug(f"Session contents: {dict(session)}")
+        oauth_logger.debug(f"Session ID: {session.sid if hasattr(session, 'sid') else 'No SID'}")
+        oauth_logger.debug(f"Session is new: {session.new if hasattr(session, 'new') else 'Unknown'}")
+
+@app.route('/api/session/debug', methods=['GET'])
+def debug_session():
+    """Debug endpoint to check session status."""
+    session_info = {
+        "session_contents": dict(session),
+        "session_cookie_config": {
+            "domain": app.config.get('SESSION_COOKIE_DOMAIN'),
+            "secure": app.config.get('SESSION_COOKIE_SECURE'),
+            "httponly": app.config.get('SESSION_COOKIE_HTTPONLY'),
+            "samesite": app.config.get('SESSION_COOKIE_SAMESITE'),
+            "lifetime": str(app.config.get('PERMANENT_SESSION_LIFETIME'))
+        },
+        "request_info": {
+            "host": request.host,
+            "origin": request.headers.get('Origin'),
+            "cookies": list(request.cookies.keys()),
+            "has_session_cookie": 'session' in request.cookies
+        },
+        "stored_state": {
+            "oauth2_state": session.get('oauth2_state', 'Not found'),
+            "oauth2_state_timestamp": session.get('oauth2_state_timestamp', 'Not found'),
+            "oauth_redirect_uri": session.get('oauth_redirect_uri', 'Not found')
+        }
+    }
+    
+    oauth_logger.debug(f"Session debug info: {json.dumps(session_info, indent=2)}")
+    return jsonify(session_info)
+
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """Initiate the OAuth2 authorization flow."""
-    # Create flow instance
+    oauth_logger.debug("=== OAuth Login Started ===")
+    oauth_logger.debug(f"Request headers: {dict(request.headers)}")
+    oauth_logger.debug(f"Request cookies: {dict(request.cookies)}")
+    oauth_logger.debug(f"Session before login: {dict(session)}")
+    oauth_logger.debug(f"Session cookie domain: {app.config.get('SESSION_COOKIE_DOMAIN')}")
+    oauth_logger.debug(f"Session cookie secure: {app.config.get('SESSION_COOKIE_SECURE')}")
+    oauth_logger.debug(f"Session cookie samesite: {app.config.get('SESSION_COOKIE_SAMESITE')}")
+    
+    # Determine the redirect URI dynamically
+    redirect_uri = get_redirect_uri(request)
+    
+    # Store the redirect URI in session for callback validation
+    session['oauth_redirect_uri'] = redirect_uri
+    
+    # Create flow instance with dynamic redirect URI
     flow = Flow.from_client_config(
         CLIENT_CONFIG,
         scopes=SCOPES,
-        redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+        redirect_uri=redirect_uri
     )
+    
+    oauth_logger.debug(f"OAuth redirect URI: {redirect_uri}")
     
     # Generate URL for request to Google's OAuth 2.0 server
     authorization_url, state = flow.authorization_url(
@@ -180,8 +320,17 @@ def login():
         prompt='consent'
     )
     
-    # Keep track of the state to validate the callback
-    oauth_states.add(state)
+    # Store state in Flask session instead of in-memory set
+    session['oauth2_state'] = state
+    session['oauth2_state_timestamp'] = datetime.now().isoformat()
+    session.modified = True
+    
+    oauth_logger.debug(f"Generated OAuth state: {state}")
+    oauth_logger.debug(f"Stored state in session: {session.get('oauth2_state')}")
+    oauth_logger.debug(f"Session after storing state: {dict(session)}")
+    oauth_logger.debug(f"Session ID (if available): {request.cookies.get('session', 'No session cookie')}")
+    oauth_logger.debug(f"Authorization URL: {authorization_url}")
+    oauth_logger.debug("=== OAuth Login Completed ===")
 
     # Return the authorization URL to the frontend
     return jsonify({"auth_url": authorization_url})
@@ -190,35 +339,54 @@ def login():
 def oauth2callback():
     """Handle the OAuth2 callback from Google."""
     try:
-        logger.info("OAuth callback initiated")
-        logger.info(f"Request URL: {request.url}")
-        logger.info(f"Request args: {dict(request.args)}")
+        oauth_logger.debug("=== OAuth Callback Started ===")
+        oauth_logger.debug(f"Request URL: {request.url}")
+        oauth_logger.debug(f"Request args: {dict(request.args)}")
+        oauth_logger.debug(f"Request headers: {dict(request.headers)}")
+        oauth_logger.debug(f"Request cookies: {dict(request.cookies)}")
+        oauth_logger.debug(f"Session before state check: {dict(session)}")
+        oauth_logger.debug(f"Session ID (if available): {request.cookies.get('session', 'No session cookie')}")
         
-        # Validate the OAuth state
-        state = request.args.get('state', '')
-        logger.info(f"OAuth state received: {state}")
+        # Enhanced state validation
+        received_state = request.args.get('state')
+        stored_state = session.get('oauth2_state')
         
-        # Skip state validation for Railway production environment due to stateless architecture
-        if os.environ.get('ENVIRONMENT') == 'production':
-            logger.info("Production environment: Skipping state validation due to Railway's stateless architecture")
-        else:
-            # For development, still validate state
-            if state not in oauth_states:
-                logger.error(f"OAuth state not found in memory: {state}")
-                frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-                return redirect(f"{frontend_url}?auth=error&error=invalid_state")
-            else:
-                oauth_states.discard(state)
-                logger.info(f"OAuth state validated and removed from memory")
+        oauth_logger.debug(f"Received state: {received_state}")
+        oauth_logger.debug(f"Stored state: {stored_state}")
+        
+        if not received_state:
+            oauth_logger.error("Missing state parameter in callback")
+            frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+            return redirect(f"{frontend_url}?auth=error&error=missing_state")
+        
+        # Validate state for all environments now that we use sessions
+        if not stored_state:
+            oauth_logger.error("No stored state in session - possible session loss")
+            frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+            return redirect(f"{frontend_url}?auth=error&error=no_stored_state")
+        
+        if not secrets.compare_digest(received_state, stored_state):
+            oauth_logger.error("State mismatch - possible CSRF attack")
+            oauth_logger.error(f"Expected: {stored_state[:20]}...")
+            oauth_logger.error(f"Received: {received_state[:20]}...")
+            frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+            return redirect(f"{frontend_url}?auth=error&error=state_mismatch")
+        
+        # Clear state from session
+        session.pop('oauth2_state', None)
+        session.pop('oauth2_state_timestamp', None)
+        session.modified = True
+        
+        oauth_logger.debug("State validation passed")
         
         # Check for OAuth error
         error = request.args.get('error')
         if error:
-            logger.error(f"OAuth error from Google: {error}")
+            oauth_logger.error(f"OAuth error from Google: {error}")
             frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
             return redirect(f"{frontend_url}?auth=error&error={error}")
         
-        logger.info("Creating OAuth flow")
+        oauth_logger.info("Creating OAuth flow")
         # Log CLIENT_CONFIG without sensitive data
         safe_config = {
             "web": {
@@ -227,35 +395,44 @@ def oauth2callback():
                 "redirect_uris": CLIENT_CONFIG['web']['redirect_uris']
             }
         }
-        logger.info(f"CLIENT_CONFIG (redacted): {safe_config}")
+        oauth_logger.info(f"CLIENT_CONFIG (redacted): {safe_config}")
+        
+        # Get the redirect URI from session or determine it dynamically
+        redirect_uri = session.get('oauth_redirect_uri') or get_redirect_uri(request)
+        oauth_logger.debug(f"Using redirect URI for callback: {redirect_uri}")
         
         flow = Flow.from_client_config(
             CLIENT_CONFIG,
             scopes=SCOPES,
-            state=state,
-            redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+            state=received_state,
+            redirect_uri=redirect_uri
         )
-        logger.info("OAuth flow created successfully")
+        oauth_logger.info("OAuth flow created successfully")
         
         # Use the authorization server's response to fetch the OAuth 2.0 tokens
         authorization_response = request.url
-        logger.info(f"Authorization response URL: {authorization_response}")
+        oauth_logger.info(f"Authorization response URL: {authorization_response}")
         
-        logger.info("Fetching OAuth tokens")
-        flow.fetch_token(authorization_response=authorization_response)
-        logger.info("OAuth tokens fetched successfully")
+        oauth_logger.info("Fetching OAuth tokens")
+        try:
+            flow.fetch_token(authorization_response=authorization_response)
+            oauth_logger.info("OAuth tokens fetched successfully")
+        except Warning as w:
+            # Handle scope mismatch warning (Google adds 'openid' automatically)
+            oauth_logger.warning(f"OAuth scope warning (non-fatal): {str(w)}")
+            oauth_logger.info("Continuing with authentication despite scope warning")
         
         credentials = flow.credentials
-        logger.info("Getting user info")
+        oauth_logger.info("Getting user info")
         user_info = get_user_info(credentials)
-        logger.info(f"User info retrieved: {user_info}")
+        oauth_logger.info(f"User info retrieved: {user_info}")
         
         user_id = user_info['email']
-        logger.info(f"User ID: {user_id}")
+        oauth_logger.info(f"User ID: {user_id}")
 
-        logger.info("Converting credentials to JSON")
+        oauth_logger.info("Converting credentials to JSON")
         creds_dict = json.loads(credentials.to_json())
-        logger.info("Credentials converted successfully")
+        oauth_logger.info("Credentials converted successfully")
         
         # Initialize user stats and activities
         if user_id not in user_stats:
@@ -264,7 +441,7 @@ def oauth2callback():
                 "total_unsubscribed": 0,
                 "time_saved": 0
             }
-            logger.info(f"Initialized stats for user: {user_id}")
+            oauth_logger.info(f"Initialized stats for user: {user_id}")
         
         if user_id not in user_activities:
             user_activities[user_id] = [{
@@ -272,36 +449,52 @@ def oauth2callback():
                 "message": "Successfully connected Gmail account",
                 "time": datetime.now().isoformat()
             }]
-            logger.info(f"Initialized activities for user: {user_id}")
+            oauth_logger.info(f"Initialized activities for user: {user_id}")
         
         # Create JWT token containing the credentials
-        logger.info("Creating JWT token")
+        oauth_logger.info("Creating JWT token")
         token = jwt.encode({
             "user_id": user_id,
             "credentials": creds_dict,
             "exp": datetime.now().replace(tzinfo=None) + timedelta(days=5)
         }, app.secret_key, algorithm="HS256")
-        logger.info("JWT token created successfully")
+        oauth_logger.info("JWT token created successfully")
 
         # Redirect to frontend with token
         frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
         redirect_url = f"{frontend_url}?auth=success&email={user_id}&token={token}"
-        logger.info(f"Redirecting to: {redirect_url}")
+        
+        oauth_logger.debug(f"Final session contents: {dict(session)}")
+        oauth_logger.debug("=== OAuth Callback Completed ===")
+        oauth_logger.info(f"Redirecting to: {redirect_url}")
+        
         return redirect(redirect_url)
         
     except Exception as e:
-        logger.error(f"OAuth callback error: {str(e)}")
-        logger.error(f"Error type: {type(e).__name__}")
+        oauth_logger.error(f"OAuth callback error: {str(e)}")
+        oauth_logger.error(f"Error type: {type(e).__name__}")
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        oauth_logger.error(f"Traceback: {traceback.format_exc()}")
+        
+        # Add specific handling for common OAuth errors
+        error_message = str(e).lower()
+        if 'redirect_uri_mismatch' in error_message:
+            oauth_logger.error("REDIRECT_URI_MISMATCH ERROR DETECTED!")
+            oauth_logger.error(f"Used redirect URI: {redirect_uri}")
+            oauth_logger.error("Please ensure this URI is added to your Google Cloud Console:")
+            oauth_logger.error("1. Go to https://console.cloud.google.com/")
+            oauth_logger.error("2. Navigate to APIs & Services → Credentials")
+            oauth_logger.error("3. Edit your OAuth 2.0 Client ID")
+            oauth_logger.error(f"4. Add '{redirect_uri}' to Authorized redirect URIs")
         
         # Add environment variable debugging
-        logger.error(f"Environment check: CLIENT_ID exists: {bool(os.environ.get('GOOGLE_CLIENT_ID'))}")
-        logger.error(f"Environment check: CLIENT_SECRET exists: {bool(os.environ.get('GOOGLE_CLIENT_SECRET'))}")
-        logger.error(f"Environment check: PROJECT_ID exists: {bool(os.environ.get('GOOGLE_PROJECT_ID'))}")
-        logger.error(f"Environment check: SECRET_KEY exists: {bool(os.environ.get('SECRET_KEY'))}")
-        logger.error(f"Environment check: REDIRECT_URI: {os.environ.get('REDIRECT_URI', 'NOT SET')}")
-        logger.error(f"Environment check: ENVIRONMENT: {os.environ.get('ENVIRONMENT', 'NOT SET')}")
+        oauth_logger.error(f"Environment check: CLIENT_ID exists: {bool(os.environ.get('GOOGLE_CLIENT_ID'))}")
+        oauth_logger.error(f"Environment check: CLIENT_SECRET exists: {bool(os.environ.get('GOOGLE_CLIENT_SECRET'))}")
+        oauth_logger.error(f"Environment check: PROJECT_ID exists: {bool(os.environ.get('GOOGLE_PROJECT_ID'))}")
+        oauth_logger.error(f"Environment check: SECRET_KEY exists: {bool(os.environ.get('SECRET_KEY'))}")
+        oauth_logger.error(f"Environment check: REDIRECT_URI: {os.environ.get('REDIRECT_URI', 'NOT SET')}")
+        oauth_logger.error(f"Environment check: ENVIRONMENT: {os.environ.get('ENVIRONMENT', 'NOT SET')}")
+        oauth_logger.error(f"Environment check: FRONTEND_URL: {os.environ.get('FRONTEND_URL', 'NOT SET')}")
         
         # Include error type in redirect for debugging
         error_type = type(e).__name__
@@ -322,6 +515,32 @@ def oauth2callback():
 def logout():
     """Client-side logout. No server state is stored."""
     return jsonify({"success": True, "message": "Logged out"})
+
+@app.route('/api/auth/debug', methods=['GET'])
+def auth_debug():
+    """Debug endpoint to show OAuth configuration."""
+    redirect_uri = get_redirect_uri(request)
+    
+    return jsonify({
+        "current_redirect_uri": redirect_uri,
+        "request_host": request.headers.get('Host'),
+        "request_scheme": 'https' if request.is_secure else 'http',
+        "x_forwarded_host": request.headers.get('X-Forwarded-Host'),
+        "x_forwarded_proto": request.headers.get('X-Forwarded-Proto'),
+        "configured_client_id": CLIENT_CONFIG['web']['client_id'][:20] + "..." if CLIENT_CONFIG['web']['client_id'] else None,
+        "environment": os.environ.get('ENVIRONMENT', 'NOT SET'),
+        "frontend_url": os.environ.get('FRONTEND_URL', 'NOT SET'),
+        "instructions": {
+            "message": "Add the 'current_redirect_uri' to your Google Cloud Console",
+            "steps": [
+                "1. Go to https://console.cloud.google.com/",
+                "2. Navigate to APIs & Services → Credentials",
+                "3. Edit your OAuth 2.0 Client ID",
+                f"4. Add '{redirect_uri}' to Authorized redirect URIs",
+                "5. Save the changes"
+            ]
+        }
+    })
 
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
@@ -411,37 +630,245 @@ def get_unsubscription_status():
         "activities": user_activities.get(user_id, [])
     })
 
+# Claude AI Chat Endpoints
+@app.route('/api/chat/status', methods=['GET'])
+def chat_status():
+    """Check if Claude chat functionality is available."""
+    return jsonify({
+        "available": CLAUDE_AVAILABLE,
+        "service": "claude-chat",
+        "timestamp": datetime.now().isoformat()
+    })
+
+@app.route('/api/chat/simple', methods=['POST'])
+@auth_required
+def chat_simple_endpoint():
+    """Simple chat interface with Claude using cached prompts."""
+    if not CLAUDE_AVAILABLE:
+        return jsonify({"error": "Claude chat not available"}), 503
+    
+    try:
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        
+        if not message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        # Get user context for logging
+        user_id = g.user_id
+        logger.info(f"Claude chat request from user {user_id}: {message[:100]}...")
+        
+        # Call Claude with caching
+        response = chat_simple(message)
+        
+        # Log the response
+        logger.info(f"Claude response length: {len(response)} characters")
+        
+        return jsonify({
+            "response": response,
+            "user_id": user_id,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except ValueError as e:
+        logger.error(f"Configuration error in Claude chat: {e}")
+        return jsonify({"error": "Chat service configuration error"}), 500
+    except Exception as e:
+        logger.error(f"Error in Claude chat: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/chat/gmail-context', methods=['POST'])
+@auth_required  
+def chat_with_gmail_context_endpoint():
+    """Chat with Claude including Gmail unsubscriber context."""
+    if not CLAUDE_AVAILABLE:
+        return jsonify({"error": "Claude chat not available"}), 503
+    
+    try:
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        
+        if not message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        user_id = g.user_id
+        
+        # Build context from current user session
+        gmail_context = {
+            "stats": user_stats.get(user_id, {}),
+            "recent_activities": user_activities.get(user_id, [])[-3:],
+            "service": "gmail-unsubscriber"
+        }
+        
+        user_context = {
+            "user_id": user_id,
+            "authenticated": True,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Include any additional context from request
+        if data.get('gmail_context'):
+            gmail_context.update(data['gmail_context'])
+        
+        if data.get('user_context'):
+            user_context.update(data['user_context'])
+        
+        logger.info(f"Claude context chat from user {user_id}: {message[:100]}...")
+        
+        # Call Claude with context
+        response = chat_with_gmail_context(message, gmail_context, user_context)
+        
+        return jsonify({
+            "response": response,
+            "user_id": user_id,
+            "context_included": {
+                "gmail_stats": bool(gmail_context.get("stats")),
+                "recent_activities": len(gmail_context.get("recent_activities", [])),
+                "user_authenticated": user_context.get("authenticated", False)
+            },
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except ValueError as e:
+        logger.error(f"Configuration error in Claude context chat: {e}")
+        return jsonify({"error": "Chat service configuration error"}), 500
+    except Exception as e:
+        logger.error(f"Error in Claude context chat: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route('/api/chat/conversation', methods=['POST'])
+@auth_required
+def chat_conversation_endpoint():
+    """Multi-turn conversation with Claude maintaining history and caching."""
+    if not CLAUDE_AVAILABLE:
+        return jsonify({"error": "Claude chat not available"}), 503
+    
+    try:
+        data = request.get_json()
+        message = data.get('message', '').strip()
+        history = data.get('history', [])
+        
+        if not message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        # Validate history format
+        if history and not isinstance(history, list):
+            return jsonify({"error": "History must be a list of message objects"}), 400
+        
+        user_id = g.user_id
+        logger.info(f"Claude conversation from user {user_id} with {len(history)} history items")
+        
+        # Call Claude with conversation history for optimal caching
+        response = ask_claude(message, history)
+        
+        # Extract text response
+        response_text = response.content[0].text if response.content else ""
+        
+        # Log cache usage for monitoring
+        usage = response.usage
+        cache_info = {
+            "cache_read_tokens": getattr(usage, 'cache_read_input_tokens', 0),
+            "cache_write_tokens": getattr(usage, 'cache_creation_input_tokens', 0),
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens
+        }
+        
+        logger.info(f"Cache usage: {cache_info}")
+        
+        return jsonify({
+            "response": response_text,
+            "user_id": user_id,
+            "conversation_length": len(history) + 1,
+            "cache_info": cache_info,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    except ValueError as e:
+        logger.error(f"Configuration error in Claude conversation: {e}")
+        return jsonify({"error": "Chat service configuration error"}), 500
+    except Exception as e:
+        logger.error(f"Error in Claude conversation: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
 # Helper functions
 def get_user_info(credentials):
     """Get the user's email address from their Google account."""
     try:
-        # Use the Google OAuth2 API to get user info
-        from google.auth.transport.requests import Request as AuthRequest
-        import requests as req
+        # Log credentials object for debugging
+        oauth_logger.debug(f"Credentials type: {type(credentials)}")
+        oauth_logger.debug(f"Credentials valid: {credentials.valid}")
+        oauth_logger.debug(f"Credentials expired: {credentials.expired}")
+        oauth_logger.debug(f"Has refresh token: {bool(credentials.refresh_token)}")
         
-        # Get access token from credentials
+        # Refresh credentials if needed
+        from google.auth.transport.requests import Request as AuthRequest
         if not credentials.valid:
             if credentials.expired and credentials.refresh_token:
+                oauth_logger.info("Refreshing expired credentials")
                 credentials.refresh(AuthRequest())
         
-        # Make direct request to Google's userinfo endpoint
-        headers = {'Authorization': f'Bearer {credentials.token}'}
-        response = req.get('https://www.googleapis.com/oauth2/v2/userinfo', headers=headers)
+        # Log token information for debugging
+        oauth_logger.debug(f"Token value: {getattr(credentials, 'token', 'NO TOKEN ATTR')[:20]}..." if hasattr(credentials, 'token') and credentials.token else "NO TOKEN")
+        oauth_logger.debug(f"Token expiry: {getattr(credentials, 'expiry', 'NO EXPIRY')}")
+        oauth_logger.debug(f"Scopes: {getattr(credentials, 'scopes', 'NO SCOPES')}")
         
-        if response.status_code != 200:
-            raise ValueError(f"Failed to get user info: {response.status_code} - {response.text}")
-        
-        user_info = response.json()
-        if 'email' not in user_info:
-            raise ValueError("No email found in user info")
-        
-        logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
-        return user_info
+        # Option 1: Use the OAuth2 API service (recommended approach)
+        try:
+            oauth_logger.info("Attempting to get user info using OAuth2 service")
+            # Create the OAuth2 service with explicit authorization
+            from googleapiclient import discovery
+            import google_auth_httplib2
+            authorized_http = google_auth_httplib2.AuthorizedHttp(credentials)
+            oauth2_service = discovery.build('oauth2', 'v2', http=authorized_http)
+            user_info = oauth2_service.userinfo().get().execute()
+            
+            if 'email' not in user_info:
+                raise ValueError("No email found in user info")
+            
+            logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
+            return user_info
+            
+        except Exception as service_error:
+            oauth_logger.error(f"OAuth2 service approach failed: {service_error}")
+            
+            # Option 2: Fallback to manual request with proper token access
+            oauth_logger.info("Falling back to manual HTTP request")
+            import requests as req
+            
+            # Try different ways to access the token
+            access_token = None
+            if hasattr(credentials, 'token') and credentials.token:
+                access_token = credentials.token
+                oauth_logger.debug("Using credentials.token")
+            elif hasattr(credentials, 'access_token') and credentials.access_token:
+                access_token = credentials.access_token
+                oauth_logger.debug("Using credentials.access_token")
+            elif hasattr(credentials, '_token') and credentials._token:
+                access_token = credentials._token
+                oauth_logger.debug("Using credentials._token")
+            else:
+                # Log available attributes for debugging
+                oauth_logger.error(f"Available credential attributes: {dir(credentials)}")
+                raise ValueError("Could not find access token in credentials object")
+            
+            headers = {'Authorization': f'Bearer {access_token}'}
+            response = req.get('https://www.googleapis.com/oauth2/v2/userinfo', headers=headers)
+            
+            if response.status_code != 200:
+                raise ValueError(f"Failed to get user info: {response.status_code} - {response.text}")
+            
+            user_info = response.json()
+            if 'email' not in user_info:
+                raise ValueError("No email found in user info")
+            
+            logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
+            return user_info
+            
     except Exception as e:
         logger.error(f"Error getting user info: {str(e)}")
-        logger.error(f"Error type: {type(e).__name__}")
+        oauth_logger.error(f"Error type: {type(e).__name__}")
         import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        oauth_logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
 def add_activity(user_id, activity_type, message):

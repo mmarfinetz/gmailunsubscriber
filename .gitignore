@@ -65,4 +65,12 @@ token.pickle
 
 # Node
 node_modules
+
+# Claude Code
+.claude/settings.local.json
+.claude/deployment.log
+.claude/debug.log
+.claude/*.backup
+
 CLAUDE.md
+.env.local

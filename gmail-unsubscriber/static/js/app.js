@@ -9,7 +9,9 @@
  */
 
 // Configuration
-const API_BASE_URL = window.VITE_API_URL || window.NEXT_PUBLIC_API_BASE_URL || 'https://gmailunsubscriber-production.up.railway.app';
+const API_BASE_URL = window.VITE_API_URL || window.NEXT_PUBLIC_API_BASE_URL || 
+    (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname === '::1' || window.location.hostname.match(/^\[.*\]$/) ? 
+        'http://localhost:5000' : 'https://gmailunsubscriber-production.up.railway.app');
 
 // DOM Elements
 const authSection = document.getElementById('auth-section');
@@ -64,35 +66,70 @@ function checkAuthCallback() {
     const authStatus = urlParams.get('auth');
     const email = urlParams.get('email');
     const token = urlParams.get('token');
+    const error = urlParams.get('error');
+    const details = urlParams.get('details');
+
+    console.log('=== OAuth Callback Check ===');
+    console.log('URL params:', {
+        authStatus,
+        email: email ? 'present' : 'missing',
+        token: token ? 'present' : 'missing',
+        error,
+        details
+    });
+
+    if (authStatus === 'error') {
+        console.error('OAuth authentication failed:', error, details);
+        alert(`Authentication failed: ${error}\n${details ? `Details: ${details}` : ''}`);
+        return;
+    }
 
     if (authStatus === 'success' && email && token) {
+        console.log('OAuth authentication successful');
+        console.log('Email:', email);
+        console.log('Token length:', token.length);
+        
         // Clear URL parameters
         window.history.replaceState({}, document.title, window.location.pathname);
 
         // Update UI
         userEmail.textContent = email;
         localStorage.setItem('auth_token', token);
+        console.log('Token stored in localStorage');
+        
         showDashboard();
 
         // Load user data
         loadUserData();
+        
+        // Debug auth state after successful login
+        debugAuthState();
     }
 }
 
 // Check if user is authenticated
 function checkAuthStatus() {
+    console.log('=== Checking Auth Status ===');
     const token = localStorage.getItem('auth_token');
+    console.log('Token present:', !!token);
+    
     fetch(`${API_BASE_URL}/api/auth/status`, {
         method: 'GET',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        credentials: 'include'
     })
-    .then(response => response.json())
+    .then(response => {
+        console.log('Auth check response status:', response.status);
+        return response.json();
+    })
     .then(data => {
+        console.log('Auth check data:', data);
         if (data.authenticated) {
             userEmail.textContent = data.email;
             showDashboard();
             loadUserData();
         } else {
+            console.log('User not authenticated, showing auth screen');
             showAuthScreen();
         }
     })
@@ -139,7 +176,12 @@ function handleAuth() {
     authBtn.disabled = true;
     
     // Get auth URL from backend
-    fetch(`${API_BASE_URL}/api/auth/login`)
+    fetch(`${API_BASE_URL}/api/auth/login`, {
+        credentials: 'include',  // Important: Include cookies for session management
+        headers: {
+            'Content-Type': 'application/json'
+        }
+    })
         .then(response => response.json())
         .then(data => {
             // Redirect to Google OAuth
@@ -161,7 +203,8 @@ function handleLogout() {
     const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/auth/logout`, {
         method: 'POST',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        credentials: 'include'
     })
     .then(response => response.json())
     .then(data => {
@@ -198,7 +241,8 @@ function loadUserData() {
     const headers = token ? { 'Authorization': `Bearer ${token}` } : {};
     fetch(`${API_BASE_URL}/api/stats`, {
         method: 'GET',
-        headers
+        headers,
+        credentials: 'include'
     })
     .then(response => response.json())
     .then(data => {
@@ -211,7 +255,8 @@ function loadUserData() {
     // Load activities
     fetch(`${API_BASE_URL}/api/activities`, {
         method: 'GET',
-        headers
+        headers,
+        credentials: 'include'
     })
     .then(response => response.json())
     .then(activities => {
@@ -354,6 +399,7 @@ function startUnsubscriptionProcess() {
         headers: Object.assign({
             'Content-Type': 'application/json'
         }, token ? { 'Authorization': `Bearer ${token}` } : {}),
+        credentials: 'include',
         body: JSON.stringify({
             search_query: searchQuery,
             max_emails: maxEmails
@@ -397,7 +443,8 @@ function startStatusPolling() {
         const token = localStorage.getItem('auth_token');
         fetch(`${API_BASE_URL}/api/unsubscribe/status`, {
             method: 'GET',
-            headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            credentials: 'include'
         })
         .then(response => response.json())
         .then(data => {
@@ -468,7 +515,8 @@ function finishUnsubscriptionProcess() {
     const token = localStorage.getItem('auth_token');
     fetch(`${API_BASE_URL}/api/stats`, {
         method: 'GET',
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+        headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+        credentials: 'include'
     })
     .then(response => response.json())
     .then(stats => {
@@ -477,6 +525,37 @@ function finishUnsubscriptionProcess() {
     .catch(error => {
         console.error('Error loading final stats:', error);
         alert('Unsubscription process completed!');
+    });
+}
+
+// Debug authentication state
+function debugAuthState() {
+    console.log('=== Auth State Debug ===');
+    console.log('localStorage token:', localStorage.getItem('auth_token'));
+    console.log('sessionStorage token:', sessionStorage.getItem('auth_token'));
+    console.log('Current URL:', window.location.href);
+    console.log('URL params:', new URLSearchParams(window.location.search).toString());
+    
+    // Test auth status endpoint
+    const token = localStorage.getItem('auth_token');
+    fetch(`${API_BASE_URL}/api/auth/status`, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+            'Content-Type': 'application/json'
+        }
+    })
+    .then(response => {
+        console.log('Auth status response:', response.status);
+        console.log('Response headers:', response.headers);
+        return response.json();
+    })
+    .then(data => {
+        console.log('Auth status data:', data);
+    })
+    .catch(error => {
+        console.error('Auth status error:', error);
     });
 }
 
