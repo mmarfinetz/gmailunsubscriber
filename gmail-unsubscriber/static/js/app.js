@@ -70,13 +70,6 @@ function checkAuthCallback() {
     const details = urlParams.get('details');
 
     console.log('=== OAuth Callback Check ===');
-    console.log('URL params:', {
-        authStatus,
-        email: email ? 'present' : 'missing',
-        token: token ? 'present' : 'missing',
-        error,
-        details
-    });
 
     if (authStatus === 'error') {
         console.error('OAuth authentication failed:', error, details);
@@ -123,7 +116,6 @@ function checkAuthStatus() {
         return response.json();
     })
     .then(data => {
-        console.log('Auth check data:', data);
         if (data.authenticated) {
             userEmail.textContent = data.email;
             showDashboard();
@@ -265,6 +257,20 @@ function loadUserData() {
     .catch(error => {
         console.error('Error loading activities:', error);
     });
+    
+    // Load unsubscribed services
+    fetch(`${API_BASE_URL}/api/unsubscribed-services`, {
+        method: 'GET',
+        headers,
+        credentials: 'include'
+    })
+    .then(response => response.json())
+    .then(services => {
+        updateServicesUI(services);
+    })
+    .catch(error => {
+        console.error('Error loading unsubscribed services:', error);
+    });
 }
 
 // Update stats UI
@@ -298,11 +304,186 @@ function updateActivitiesUI(activities) {
         activityList.removeChild(activityList.firstChild);
     }
     
+    // Track failed unsubscribe attempts
+    const failedServices = [];
+    
     // Add activities to the list
     activities.forEach(activity => {
         const activityItem = createActivityElement(activity);
         activityList.appendChild(activityItem);
+        
+        // Check if this is a failed unsubscribe attempt
+        if (activity.type === 'error' && 
+            (activity.message.includes('Failed to unsubscribe from') || 
+             activity.message.includes('Non-200 status') ||
+             activity.message.includes('No unsubscribe links found'))) {
+            
+            // Extract service information from the message
+            let serviceName = '';
+            
+            // Try to extract service name from different message formats
+            if (activity.message.includes('Failed to unsubscribe from')) {
+                const match = activity.message.match(/Failed to unsubscribe from (.+?) \(/);
+                serviceName = match ? match[1] : '';
+            } else if (activity.message.includes('from email')) {
+                // Handle "No unsubscribe links found in email X/Y from ServiceName"
+                const match = activity.message.match(/from (.+)$/);
+                serviceName = match ? match[1] : '';
+            }
+            
+            // If we still don't have a service name, try to extract domain from metadata
+            if (!serviceName && activity.metadata && activity.metadata.domain) {
+                serviceName = activity.metadata.domain;
+            }
+            
+            if (serviceName) {
+                failedServices.push({
+                    service: serviceName,
+                    message: activity.message,
+                    time: activity.time
+                });
+            }
+        }
     });
+    
+    // Store failed services in localStorage for the manual unsubscribe page
+    localStorage.setItem('failedUnsubscribeServices', JSON.stringify(failedServices));
+    
+    // Update the manual unsubscribe link visibility
+    updateManualUnsubscribeVisibility(failedServices.length > 0);
+}
+
+// Update manual unsubscribe section visibility
+function updateManualUnsubscribeVisibility(hasFailedServices) {
+    const manualUnsubscribeSection = document.querySelector('.manual-unsubscribe-section');
+    if (manualUnsubscribeSection) {
+        if (hasFailedServices) {
+            manualUnsubscribeSection.style.display = 'block';
+            
+            // Update the count in the message
+            const failedCount = JSON.parse(localStorage.getItem('failedUnsubscribeServices') || '[]').length;
+            const messageElement = manualUnsubscribeSection.querySelector('.info-content p');
+            if (messageElement) {
+                messageElement.innerHTML = `Some services (${failedCount}) require manual unsubscription. Visit our <a href="manual_unsubscribe.html" target="_blank">manual unsubscribe guide</a> to complete the process.`;
+            }
+        } else {
+            manualUnsubscribeSection.style.display = 'none';
+        }
+    }
+}
+
+// Update unsubscribed services UI
+function updateServicesUI(services) {
+    console.log('=== updateServicesUI called ===');
+    console.log('Services data:', services);
+    
+    const servicesSection = document.getElementById('services-section');
+    const servicesGrid = document.getElementById('services-grid');
+    const servicesCount = document.getElementById('services-count');
+    
+    // Ensure we have the DOM elements
+    if (!servicesSection || !servicesGrid || !servicesCount) {
+        console.error('Missing DOM elements for services section');
+        return;
+    }
+    
+    console.log('DOM elements found successfully');
+    
+    // Force clear any existing content that might be causing issues
+    servicesGrid.innerHTML = '';
+    
+    // Also clear the entire services section and rebuild it to ensure no interference
+    const servicesContainer = servicesSection.parentElement;
+    const newServicesSection = document.createElement('div');
+    newServicesSection.className = 'services-section';
+    newServicesSection.id = 'services-section';
+    newServicesSection.style.display = 'block';
+    
+    // Show section if we have services
+    if (services && services.length > 0) {
+        console.log('Processing', services.length, 'services');
+        
+        // Create the section header
+        const header = document.createElement('div');
+        header.className = 'services-header';
+        header.innerHTML = `
+            <h3>Unsubscribed Services</h3>
+            <span class="services-count">${services.length} service${services.length !== 1 ? 's' : ''}</span>
+        `;
+        newServicesSection.appendChild(header);
+        
+        // Create the grid container
+        const grid = document.createElement('div');
+        grid.className = 'services-grid';
+        grid.id = 'services-grid';
+        
+        // Add service cards
+        services.forEach((service, index) => {
+            console.log(`Creating service card ${index}:`, service);
+            const serviceCard = createServiceCard(service);
+            console.log('Service card HTML:', serviceCard.outerHTML);
+            grid.appendChild(serviceCard);
+        });
+        
+        newServicesSection.appendChild(grid);
+        
+        // Replace the old section with the new one
+        servicesContainer.replaceChild(newServicesSection, servicesSection);
+        
+        console.log('Services section rebuilt successfully');
+    } else {
+        console.log('No services to display, hiding section');
+        newServicesSection.style.display = 'none';
+    }
+}
+
+// Create a service card element
+function createServiceCard(service) {
+    console.log('Creating service card for:', service);
+    
+    // Validate service data
+    if (!service || typeof service !== 'object') {
+        console.error('Invalid service data:', service);
+        return document.createElement('div');
+    }
+    
+    const card = document.createElement('div');
+    card.className = 'service-card';
+    
+    // Get first letter of domain for icon
+    const senderName = service.sender_name || service.domain || 'Unknown';
+    const domain = service.domain || 'unknown.com';
+    const firstLetter = senderName.charAt(0).toUpperCase();
+    
+    // Format email list
+    const emails = service.emails || [];
+    const emailsList = emails.length > 0 ? 
+        emails.slice(0, 3).map(email => 
+            `<div class="service-email">${email}</div>`
+        ).join('') : '<div class="service-email">No emails available</div>';
+    
+    const moreEmails = emails.length > 3 ? 
+        `<div class="service-email-more">+${emails.length - 3} more</div>` : '';
+    
+    const count = service.count || 0;
+    
+    card.innerHTML = `
+        <div class="service-icon">${firstLetter}</div>
+        <div class="service-info">
+            <div class="service-name">${senderName}</div>
+            <div class="service-domain">${domain}</div>
+            <div class="service-emails">
+                ${emailsList}
+                ${moreEmails}
+            </div>
+            <div class="service-stats">
+                <span class="service-count">${count} email${count !== 1 ? 's' : ''}</span>
+            </div>
+        </div>
+    `;
+    
+    console.log('Service card created successfully');
+    return card;
 }
 
 // Create an activity element
@@ -332,13 +513,25 @@ function createActivityElement(activity) {
     // Format time
     const timeString = formatTime(new Date(activity.time));
     
+    // Check if we have metadata for enhanced display
+    let messageContent = activity.message;
+    let domainBadge = '';
+    
+    if (activity.metadata && activity.metadata.domain) {
+        // Create a domain badge
+        domainBadge = `<span class="domain-badge">${activity.metadata.domain}</span>`;
+    }
+    
     // Create HTML
     activityItem.innerHTML = `
         <div class="activity-icon ${iconColorClass}">
             <i class="${iconClass}"></i>
         </div>
         <div class="activity-details">
-            <div class="activity-message">${activity.message}</div>
+            <div class="activity-message">
+                ${messageContent}
+                ${domainBadge}
+            </div>
             <div class="activity-time">${timeString}</div>
         </div>
     `;
@@ -378,6 +571,10 @@ function startUnsubscriptionProcess() {
         return;
     }
     
+    // Clear previous failed services when starting new process
+    localStorage.removeItem('failedUnsubscribeServices');
+    updateManualUnsubscribeVisibility(false);
+    
     // Close run modal and show processing modal
     runModal.classList.remove('active');
     processingModal.classList.add('active');
@@ -391,6 +588,9 @@ function startUnsubscriptionProcess() {
     processingStatus.textContent = 'Starting unsubscription process...';
     processingCount.textContent = `Processed: 0 / ${maxEmails}`;
     processingProgressBar.style.width = '0%';
+    
+    // Start polling immediately since backend is now async
+    startStatusPolling();
     
     // Call backend API
     const token = localStorage.getItem('auth_token');
@@ -408,8 +608,8 @@ function startUnsubscriptionProcess() {
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            // Start polling for status updates
-            startStatusPolling();
+            console.log('Unsubscription process started successfully');
+            // Polling already started above
         } else {
             throw new Error(data.error || 'Failed to start unsubscription process');
         }
@@ -454,21 +654,61 @@ function startStatusPolling() {
             // Update activities
             updateActivitiesUI(data.activities);
             
-            // Update progress
+            // Update unsubscribed services
+            fetch(`${API_BASE_URL}/api/unsubscribed-services`, {
+                method: 'GET',
+                headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+                credentials: 'include'
+            })
+            .then(response => response.json())
+            .then(services => {
+                updateServicesUI(services);
+            })
+            .catch(error => {
+                console.error('Error loading unsubscribed services:', error);
+            });
+            
+            // Update progress with real-time data
             const processed = data.stats.total_scanned || 0;
             processedEmails = processed;
             
-            // Calculate progress percentage
-            const progress = totalEmailsToProcess > 0 
-                ? Math.round((processed / totalEmailsToProcess) * 100) 
-                : 0;
-            
-            processingProgressBar.style.width = `${Math.min(progress, 100)}%`;
-            processingCount.textContent = `Processed: ${processed} / ${totalEmailsToProcess}`;
-            
-            // Check if process is complete
-            if (data.status === 'completed' || processed >= totalEmailsToProcess) {
-                finishUnsubscriptionProcess();
+            // Handle real-time processing updates
+            if (data.processing) {
+                const progress = data.processing.progress;
+                const currentEmailInfo = progress.current_email_info;
+                
+                // Update progress bar
+                const progressPercentage = totalEmailsToProcess > 0 
+                    ? Math.round((progress.current_email / totalEmailsToProcess) * 100) 
+                    : 0;
+                
+                processingProgressBar.style.width = `${Math.min(progressPercentage, 100)}%`;
+                processingCount.textContent = `Processed: ${progress.current_email} / ${totalEmailsToProcess}`;
+                
+                // Update status with current email info
+                if (currentEmailInfo) {
+                    const statusMessage = currentEmailInfo.message || 
+                        `Processing ${currentEmailInfo.sender || 'email'}...`;
+                    processingStatus.textContent = statusMessage;
+                }
+                
+                // Check if process is complete
+                if (data.processing.status === 'completed') {
+                    finishUnsubscriptionProcess();
+                }
+            } else {
+                // Fallback to old method if no processing data
+                const progress = totalEmailsToProcess > 0 
+                    ? Math.round((processed / totalEmailsToProcess) * 100) 
+                    : 0;
+                
+                processingProgressBar.style.width = `${Math.min(progress, 100)}%`;
+                processingCount.textContent = `Processed: ${processed} / ${totalEmailsToProcess}`;
+                
+                // Check if process is complete
+                if (processed >= totalEmailsToProcess) {
+                    finishUnsubscriptionProcess();
+                }
             }
         })
         .catch(error => {
@@ -552,7 +792,11 @@ function debugAuthState() {
         return response.json();
     })
     .then(data => {
-        console.log('Auth status data:', data);
+        if (data.authenticated) {
+            console.log('✓ User is authenticated');
+        } else {
+            console.log('✗ User is not authenticated');
+        }
     })
     .catch(error => {
         console.error('Auth status error:', error);

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gmail Unsubscriber - Simplify Your Inbox</title>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
     <link rel="stylesheet" href="static/css/styles.css">
 </head>
@@ -97,6 +97,29 @@
                     <div class="progress-stats">
                         <span id="emails-processed">0 processed</span>
                         <span id="emails-remaining">0 remaining</span>
+                    </div>
+                </div>
+
+                <div class="services-section" id="services-section" style="display: none;">
+                    <div class="services-header">
+                        <h3>Unsubscribed Services</h3>
+                        <span class="services-count" id="services-count">0 services</span>
+                    </div>
+                    <div class="services-grid" id="services-grid">
+                        <!-- Service cards will be added dynamically -->
+                    </div>
+                </div>
+
+                <!-- Manual Unsubscribe Link -->
+                <div class="manual-unsubscribe-section">
+                    <div class="info-card">
+                        <div class="info-icon">
+                            <i class="fas fa-info-circle"></i>
+                        </div>
+                        <div class="info-content">
+                            <h3>Some services require manual unsubscription</h3>
+                            <p>For services that require login or have complex unsubscribe processes, visit our <a href="manual_unsubscribe.html" target="_blank">manual unsubscribe guide</a>.</p>
+                        </div>
                     </div>
                 </div>
 

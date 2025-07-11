@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manual Unsubscribe Links</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+        th, td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+        }
+        tr:hover {
+            background-color: #f8f9fa;
+        }
+        a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        .note {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #fff3cd;
+            border: 1px solid #ffeeba;
+            border-radius: 4px;
+            color: #856404;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        .empty-state i {
+            font-size: 48px;
+            margin-bottom: 20px;
+            color: #28a745;
+        }
+        .btn {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn:hover {
+            background-color: #0056b3;
+            color: white;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Services Requiring Manual Unsubscription</h1>
+        
+        <div class="note">
+            These services failed to unsubscribe automatically and require manual intervention. Click the service name to go directly to their unsubscribe page.
+        </div>
+
+        <div id="empty-state" class="empty-state">
+            <i class="fas fa-check-circle"></i>
+            <h3>Great! No manual unsubscriptions needed</h3>
+            <p>All unsubscribe attempts were successful. If you need to unsubscribe from more emails, go back to the dashboard and run the process again.</p>
+            <a href="index.html" class="btn">Back to Dashboard</a>
+        </div>
+
+        <table id="failed-services-table" style="display: none;">
+            <thead>
+                <tr>
+                    <th>Service Name</th>
+                    <th>Reason for Failure</th>
+                    <th>Manual Unsubscribe Action</th>
+                </tr>
+            </thead>
+            <tbody id="failed-services-tbody">
+                <!-- Failed services will be populated here -->
+            </tbody>
+        </table>
+
+        <div class="note" id="back-note" style="margin-top: 30px; display: none;">
+            💡 Tip: After manually unsubscribing from these services, you can <a href="index.html">return to the dashboard</a> to run the automated process again for any remaining emails.
+        </div>
+    </div>
+
+    <script>
+        // Service mapping for common unsubscribe URLs
+        const serviceUnsubscribeUrls = {
+            'coinbase.com': 'https://www.coinbase.com/settings/notifications',
+            'uber.com': 'https://riders.uber.com/p/email-unsubscribe/',
+            'carnival.com': 'https://www.carnival.com/about-carnival/contact-us/email-preferences',
+            'linkedin.com': 'https://www.linkedin.com/psettings/email',
+            'facebook.com': 'https://www.facebook.com/settings?tab=notifications',
+            'twitter.com': 'https://twitter.com/settings/notifications',
+            'amazon.com': 'https://www.amazon.com/email/preferences',
+            'quora.com': 'https://www.quora.com/email_settings',
+            'medium.com': 'https://medium.com/me/settings',
+            'pinterest.com': 'https://www.pinterest.com/settings/notifications',
+            'reddit.com': 'https://www.reddit.com/settings/notifications',
+            'instagram.com': 'https://www.instagram.com/accounts/emailsettings/',
+            'netflix.com': 'https://www.netflix.com/EmailPreferences',
+            'spotify.com': 'https://www.spotify.com/account/privacy/',
+            'apple.com': 'https://appleid.apple.com/account/manage',
+            'microsoft.com': 'https://account.microsoft.com/profile/communications',
+            'google.com': 'https://myaccount.google.com/notifications'
+        };
+
+        // Get domain from email address or service name
+        function getDomain(serviceInfo) {
+            // Extract domain from email or service name
+            const match = serviceInfo.match(/([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+            return match ? match[1].toLowerCase() : null;
+        }
+
+        // Get unsubscribe URL for a service
+        function getUnsubscribeUrl(serviceInfo) {
+            const domain = getDomain(serviceInfo);
+            if (domain && serviceUnsubscribeUrls[domain]) {
+                return serviceUnsubscribeUrls[domain];
+            }
+            // Fallback: try to construct a common unsubscribe URL
+            if (domain) {
+                return `https://www.${domain}/unsubscribe`;
+            }
+            return '#';
+        }
+
+        // Get service display name
+        function getServiceName(serviceInfo) {
+            const domain = getDomain(serviceInfo);
+            if (domain) {
+                return domain.split('.')[0].charAt(0).toUpperCase() + domain.split('.')[0].slice(1);
+            }
+            return serviceInfo;
+        }
+
+        // Get failure reason based on the activity message
+        function getFailureReason(message) {
+            if (message.includes('403')) return 'Authentication required (403 error)';
+            if (message.includes('404')) return 'Unsubscribe link not found (404 error)';
+            if (message.includes('500')) return 'Server error (500 error)';
+            if (message.includes('no unsubscribe links')) return 'No unsubscribe links found in email';
+            if (message.includes('timeout')) return 'Request timeout';
+            return 'Failed to process unsubscribe request';
+        }
+
+        // Get manual action instructions
+        function getManualAction(serviceInfo) {
+            const domain = getDomain(serviceInfo);
+            const actions = {
+                'coinbase.com': 'Login to your account → Settings → Notifications',
+                'uber.com': 'Visit unsubscribe page (may require login)',
+                'carnival.com': 'Visit email preferences page',
+                'linkedin.com': 'Login to your account → Settings → Email preferences',
+                'facebook.com': 'Login to your account → Settings → Notifications',
+                'twitter.com': 'Login to your account → Settings → Notifications',
+                'amazon.com': 'Login to your account → Email preferences',
+                'netflix.com': 'Login to your account → Email preferences',
+                'spotify.com': 'Login to your account → Privacy settings'
+            };
+            
+            return actions[domain] || 'Visit website and look for unsubscribe/email preferences';
+        }
+
+        // Load failed services from localStorage
+        function loadFailedServices() {
+            const failedServices = JSON.parse(localStorage.getItem('failedUnsubscribeServices') || '[]');
+            
+            if (failedServices.length === 0) {
+                document.getElementById('empty-state').style.display = 'block';
+                return;
+            }
+
+            // Hide empty state and show table
+            document.getElementById('empty-state').style.display = 'none';
+            document.getElementById('failed-services-table').style.display = 'table';
+            document.getElementById('back-note').style.display = 'block';
+
+            const tbody = document.getElementById('failed-services-tbody');
+            tbody.innerHTML = '';
+
+            failedServices.forEach(service => {
+                const row = document.createElement('tr');
+                const serviceName = getServiceName(service.service);
+                const unsubscribeUrl = getUnsubscribeUrl(service.service);
+                
+                row.innerHTML = `
+                    <td><a href="${unsubscribeUrl}" target="_blank">${serviceName}</a></td>
+                    <td>${getFailureReason(service.message)}</td>
+                    <td>${getManualAction(service.service)}</td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        // Load failed services when page loads
+        document.addEventListener('DOMContentLoaded', loadFailedServices);
+    </script>
+</body>
+</html> 

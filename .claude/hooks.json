@@ -1,0 +1,46 @@
+{
+  "hooks": {
+    "postEdit": [
+      {
+        "name": "format_python",
+        "pattern": "*.py",
+        "command": "black --line-length 88 {file} && isort {file}",
+        "description": "Auto-format Python files with Black and isort"
+      },
+      {
+        "name": "lint_python", 
+        "pattern": "*.py",
+        "command": "flake8 --max-line-length=88 --extend-ignore=E203 {file}",
+        "description": "Lint Python files for style issues"
+      },
+      {
+        "name": "validate_json",
+        "pattern": "*.json",
+        "command": "python -m json.tool {file} > /dev/null",
+        "description": "Validate JSON syntax"
+      }
+    ],
+    "preWrite": [
+      {
+        "name": "backup_sensitive",
+        "pattern": "*.env*",
+        "command": "echo 'Warning: Modifying environment file' && cp {file} {file}.backup",
+        "description": "Backup environment files before modification"
+      },
+      {
+        "name": "check_secrets",
+        "pattern": "*",
+        "command": "grep -l 'client_secret\\|api_key\\|password' {file} && echo 'Warning: File may contain secrets' || true",
+        "description": "Check for potential secrets in files"
+      }
+    ],
+    "postBash": [
+      {
+        "name": "log_deployments",
+        "pattern": "*deploy*",
+        "command": "echo '[DEPLOY] $(date): {command}' >> .claude/deployment.log",
+        "description": "Log deployment commands for tracking"
+      }
+    ]
+  }
+} 
