@@ -79,7 +79,7 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
 
 # Add ProxyFix middleware to handle X-Forwarded headers properly
 # This helps with proxy/load balancer scenarios like Railway
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # Configure Flask session for OAuth state management
 # Different settings for development vs production
@@ -173,20 +173,17 @@ if os.environ.get('ENVIRONMENT') == 'development':
 
 def get_redirect_uri(request):
     """Determine the correct redirect URI based on the request origin."""
-    # Get the host from the request
-    host = request.headers.get('Host', 'localhost:5000')
-    
-    # Force HTTPS in production to avoid detection issues
+    # Hardcode for production to avoid any detection issues
     if os.environ.get('ENVIRONMENT') == 'production':
-        scheme = 'https'
-    else:
-        # Get the scheme (http or https)
-        scheme = 'https' if request.is_secure else 'http'
+        return 'https://gmailunsubscriber-production.up.railway.app/oauth2callback'
+    
+    # Existing logic for dev (dynamic detection)
+    host = request.headers.get('Host', 'localhost:5000')
+    scheme = 'https' if request.is_secure else 'http'
     
     # Handle X-Forwarded headers for proxy/load balancer scenarios
     forwarded_proto = request.headers.get('X-Forwarded-Proto')
-    if forwarded_proto and os.environ.get('ENVIRONMENT') != 'production':
-        # Only trust forwarded proto in non-production or if not already forced to HTTPS
+    if forwarded_proto:
         scheme = forwarded_proto
     
     forwarded_host = request.headers.get('X-Forwarded-Host')

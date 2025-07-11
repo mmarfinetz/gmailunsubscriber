@@ -17,6 +17,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, redirect, g, session
 import jwt
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
@@ -73,6 +74,10 @@ oauth_logger.addHandler(handler)
 # Initialize Flask app
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
+
+# Add ProxyFix middleware to handle X-Forwarded headers properly
+# This helps with proxy/load balancer scenarios like Railway
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # Configure Flask session for OAuth state management
 # Different settings for development vs production
@@ -162,10 +167,12 @@ if os.environ.get('ENVIRONMENT') == 'development':
 
 def get_redirect_uri(request):
     """Determine the correct redirect URI based on the request origin."""
-    # Get the host from the request
-    host = request.headers.get('Host', 'localhost:5000')
+    # Hardcode for production to avoid any detection issues
+    if os.environ.get('ENVIRONMENT') == 'production':
+        return 'https://gmailunsubscriber-production.up.railway.app/oauth2callback'
     
-    # Get the scheme (http or https)
+    # Existing logic for dev (dynamic detection)
+    host = request.headers.get('Host', 'localhost:5000')
     scheme = 'https' if request.is_secure else 'http'
     
     # Handle X-Forwarded headers for proxy/load balancer scenarios
@@ -187,6 +194,7 @@ def get_redirect_uri(request):
     
     oauth_logger.debug(f"Determined redirect URI: {redirect_uri}")
     oauth_logger.debug(f"Request headers - Host: {request.headers.get('Host')}, X-Forwarded-Host: {forwarded_host}, X-Forwarded-Proto: {forwarded_proto}")
+    oauth_logger.debug(f"Environment: {os.environ.get('ENVIRONMENT', 'NOT SET')}")
     
     return redirect_uri
 
@@ -554,6 +562,8 @@ def auth_debug():
     
     return jsonify({
         "current_redirect_uri": redirect_uri,
+        "is_production": os.environ.get('ENVIRONMENT') == 'production',
+        "hardcoded_production_uri": 'https://gmailunsubscriber-production.up.railway.app/oauth2callback',
         "request_host": request.headers.get('Host'),
         "request_scheme": 'https' if request.is_secure else 'http',
         "x_forwarded_host": request.headers.get('X-Forwarded-Host'),
@@ -561,6 +571,7 @@ def auth_debug():
         "configured_client_id": CLIENT_CONFIG['web']['client_id'][:20] + "..." if CLIENT_CONFIG['web']['client_id'] else None,
         "environment": os.environ.get('ENVIRONMENT', 'NOT SET'),
         "frontend_url": os.environ.get('FRONTEND_URL', 'NOT SET'),
+        "proxy_fix_enabled": True,
         "instructions": {
             "message": "Add the 'current_redirect_uri' to your Google Cloud Console",
             "steps": [
