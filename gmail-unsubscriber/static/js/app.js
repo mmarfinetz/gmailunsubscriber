@@ -236,12 +236,23 @@ function loadUserData() {
         headers,
         credentials: 'include'
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
     .then(data => {
         updateStatsUI(data);
     })
     .catch(error => {
         console.error('Error loading stats:', error);
+        // Show default stats on error
+        updateStatsUI({
+            total_scanned: 0,
+            total_unsubscribed: 0,
+            time_saved: 0
+        });
     });
     
     // Load activities
@@ -264,12 +275,20 @@ function loadUserData() {
         headers,
         credentials: 'include'
     })
-    .then(response => response.json())
+    .then(response => {
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
     .then(services => {
+        console.log('Services data:', services);
         updateServicesUI(services);
     })
     .catch(error => {
         console.error('Error loading unsubscribed services:', error);
+        // Show empty services on error
+        updateServicesUI([]);
     });
 }
 
@@ -646,7 +665,12 @@ function startStatusPolling() {
             headers: token ? { 'Authorization': `Bearer ${token}` } : {},
             credentials: 'include'
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
         .then(data => {
             // Update stats
             updateStatsUI(data.stats);
@@ -660,12 +684,18 @@ function startStatusPolling() {
                 headers: token ? { 'Authorization': `Bearer ${token}` } : {},
                 credentials: 'include'
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(services => {
+                console.log('Services data during polling:', services);
                 updateServicesUI(services);
             })
             .catch(error => {
-                console.error('Error loading unsubscribed services:', error);
+                console.error('Error loading unsubscribed services during polling:', error);
             });
             
             // Update progress with real-time data

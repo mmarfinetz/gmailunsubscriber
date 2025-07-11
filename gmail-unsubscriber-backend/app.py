@@ -625,11 +625,14 @@ def get_stats():
     """Get the user's unsubscription statistics."""
     user_id = g.get('user_id')
     
-    return jsonify(user_stats.get(user_id, {
+    # Get stats and serialize sets to lists for JSON compatibility
+    stats = user_stats.get(user_id, {
         "total_scanned": 0,
         "total_unsubscribed": 0,
         "time_saved": 0
-    }))
+    })
+    
+    return jsonify(serialize_user_stats(stats))
 
 @app.route('/api/activities', methods=['GET'])
 @auth_required
@@ -737,8 +740,10 @@ def get_unsubscription_status():
                 active_session = session_data
                 break
     
+    # Serialize stats to avoid JSON serialization errors with sets
+    stats = user_stats.get(user_id, {})
     response = {
-        "stats": user_stats.get(user_id, {}),
+        "stats": serialize_user_stats(stats),
         "activities": user_activities.get(user_id, [])
     }
     
@@ -912,6 +917,23 @@ def chat_conversation_endpoint():
         return jsonify({"error": "Internal server error"}), 500
 
 # Helper functions
+def serialize_user_stats(stats):
+    """Convert sets to lists in user stats for JSON serialization."""
+    if not stats:
+        return stats
+    
+    # Create a deep copy to avoid modifying the original
+    import copy
+    serialized_stats = copy.deepcopy(stats)
+    
+    # Convert sets to lists in domains_unsubscribed
+    if "domains_unsubscribed" in serialized_stats:
+        for domain, data in serialized_stats["domains_unsubscribed"].items():
+            if "emails" in data and isinstance(data["emails"], set):
+                data["emails"] = list(data["emails"])
+    
+    return serialized_stats
+
 def get_user_info(credentials):
     """Get the user's email address from their Google account."""
     try:
