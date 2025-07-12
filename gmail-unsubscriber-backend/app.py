@@ -439,12 +439,22 @@ def get_stats():
     """Get the user's unsubscription statistics."""
     user_id = g.get('user_id')
     
-    return jsonify(user_stats.get(user_id, {
+    # Get user stats and handle set-to-list migration for JSON serialization
+    stats = user_stats.get(user_id, {
         "total_scanned": 0,
         "total_unsubscribed": 0,
         "time_saved": 0,
         "domains_unsubscribed": {}
-    }))
+    })
+    
+    if "domains_unsubscribed" in stats:
+        for domain, data in stats["domains_unsubscribed"].items():
+            emails = data.get("emails", [])
+            if isinstance(emails, set):
+                # Convert set to list for JSON serialization
+                stats["domains_unsubscribed"][domain]["emails"] = list(emails)
+    
+    return jsonify(stats)
 
 @app.route('/api/activities', methods=['GET'])
 @auth_required
@@ -477,8 +487,14 @@ def get_unsubscribed_services():
     # Convert to list format for frontend
     services = []
     for domain, data in domains_data.items():
-        # Convert set to list for JSON serialization
-        emails_list = list(data.get("emails", []))
+        # Handle migration: convert set to list for JSON serialization
+        emails = data.get("emails", [])
+        if isinstance(emails, set):
+            emails_list = list(emails)
+            # Update the stored data to use list format for future calls
+            user_stats[user_id]["domains_unsubscribed"][domain]["emails"] = emails_list
+        else:
+            emails_list = emails
         
         services.append({
             "domain": domain,
@@ -522,10 +538,19 @@ def get_unsubscription_status():
     """Get the status of the unsubscription process."""
     user_id = g.get('user_id')
     
+    # Get user stats and handle set-to-list migration for JSON serialization
+    stats = user_stats.get(user_id, {})
+    if "domains_unsubscribed" in stats:
+        for domain, data in stats["domains_unsubscribed"].items():
+            emails = data.get("emails", [])
+            if isinstance(emails, set):
+                # Convert set to list for JSON serialization
+                stats["domains_unsubscribed"][domain]["emails"] = list(emails)
+    
     # In a real app, this would check the status of the background process
     # For demo purposes, we'll just return the stats
     return jsonify({
-        "stats": user_stats.get(user_id, {}),
+        "stats": stats,
         "activities": user_activities.get(user_id, [])
     })
 
@@ -809,11 +834,12 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                         user_stats[user_id]["domains_unsubscribed"][domain] = {
                             "count": 0,
                             "sender_name": metadata.get("sender_name", domain),
-                            "emails": set()
+                            "emails": []
                         }
                     user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
-                    if metadata.get("sender_email"):
-                        user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
+                    sender_email = metadata.get("sender_email")
+                    if sender_email and sender_email not in user_stats[user_id]["domains_unsubscribed"][domain]["emails"]:
+                        user_stats[user_id]["domains_unsubscribed"][domain]["emails"].append(sender_email)
                 
                 # Add label to email
                 service.users().messages().modify(
