@@ -334,7 +334,8 @@ def oauth2callback():
             user_stats[user_id] = {
                 "total_scanned": 0,
                 "total_unsubscribed": 0,
-                "time_saved": 0
+                "time_saved": 0,
+                "domains_unsubscribed": {}
             }
             oauth_logger.info(f"Initialized stats for user: {user_id}")
         
@@ -441,7 +442,8 @@ def get_stats():
     return jsonify(user_stats.get(user_id, {
         "total_scanned": 0,
         "total_unsubscribed": 0,
-        "time_saved": 0
+        "time_saved": 0,
+        "domains_unsubscribed": {}
     }))
 
 @app.route('/api/activities', methods=['GET'])
@@ -451,6 +453,45 @@ def get_activities():
     user_id = g.get('user_id')
     
     return jsonify(user_activities.get(user_id, []))
+
+@app.route('/api/unsubscribed-services', methods=['GET'])
+@auth_required
+def get_unsubscribed_services():
+    """Get the list of unsubscribed services/domains."""
+    user_id = g.get('user_id')
+    
+    # Ensure user stats exist and have domains_unsubscribed field
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        }
+    elif "domains_unsubscribed" not in user_stats[user_id]:
+        user_stats[user_id]["domains_unsubscribed"] = {}
+    
+    # Get domain statistics
+    domains_data = user_stats.get(user_id, {}).get("domains_unsubscribed", {})
+    
+    # Convert to list format for frontend
+    services = []
+    for domain, data in domains_data.items():
+        # Convert set to list for JSON serialization
+        emails_list = list(data.get("emails", []))
+        
+        services.append({
+            "domain": domain,
+            "sender_name": data.get("sender_name", domain),
+            "emails": emails_list,
+            "count": data.get("count", 0),
+            "last_unsubscribed": datetime.now().isoformat()  # You might want to track this separately
+        })
+    
+    # Sort by count (most unsubscribed first)
+    services.sort(key=lambda x: x["count"], reverse=True)
+    
+    return jsonify(services)
 
 @app.route('/api/unsubscribe/start', methods=['POST'])
 @auth_required
@@ -681,7 +722,7 @@ def get_user_info(credentials):
         oauth_logger.error(f"Traceback: {traceback.format_exc()}")
         raise
 
-def add_activity(user_id, activity_type, message):
+def add_activity(user_id, activity_type, message, metadata=None):
     """Add an activity to the user's activity log."""
     if user_id not in user_activities:
         user_activities[user_id] = []
@@ -691,6 +732,10 @@ def add_activity(user_id, activity_type, message):
         "message": message,
         "time": datetime.now().isoformat()
     }
+    
+    # Add metadata if provided
+    if metadata:
+        activity["metadata"] = metadata
     
     user_activities[user_id].insert(0, activity)
     
@@ -728,14 +773,17 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
             # Update progress
             progress_percentage = int((i / len(messages)) * 100)
             
-            # Get email content
-            email_html = get_email(service, msg['id'])
+            # Get email content and metadata
+            email_data = get_email(service, msg['id'])
+            email_html = email_data.get("content", "")
+            metadata = email_data.get("metadata", {})
             
             # Extract unsubscribe links
             unsub_links = extract_unsub_links(email_html)
             
             if not unsub_links:
-                add_activity(user_id, "warning", f"No unsubscribe links found in email {i+1}/{len(messages)}")
+                sender_info = metadata.get("sender_name", "Unknown sender")
+                add_activity(user_id, "warning", f"No unsubscribe links found in email {i+1}/{len(messages)} from {sender_info}", metadata)
                 user_stats[user_id]["total_scanned"] += 1
                 continue
             
@@ -754,6 +802,19 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                 user_stats[user_id]["total_unsubscribed"] += 1
                 user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
                 
+                # Track domain statistics
+                domain = metadata.get("domain", "unknown")
+                if domain:
+                    if domain not in user_stats[user_id]["domains_unsubscribed"]:
+                        user_stats[user_id]["domains_unsubscribed"][domain] = {
+                            "count": 0,
+                            "sender_name": metadata.get("sender_name", domain),
+                            "emails": set()
+                        }
+                    user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
+                    if metadata.get("sender_email"):
+                        user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
+                
                 # Add label to email
                 service.users().messages().modify(
                     userId='me',
@@ -761,9 +822,11 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                     body={'removeLabelIds': ['INBOX'], 'addLabelIds': ['UNSUBSCRIBED']}
                 ).execute()
                 
-                add_activity(user_id, "success", f"Successfully unsubscribed from email {i+1}/{len(messages)}")
+                sender_info = metadata.get("sender_name", "Unknown sender")
+                add_activity(user_id, "success", f"Successfully unsubscribed from {sender_info} ({metadata.get('sender_email', '')})", metadata)
             else:
-                add_activity(user_id, "error", f"Failed to unsubscribe from email {i+1}/{len(messages)}")
+                sender_info = metadata.get("sender_name", "Unknown sender")
+                add_activity(user_id, "error", f"Failed to unsubscribe from {sender_info} ({metadata.get('sender_email', '')})", metadata)
             
             # Rate limiting
             time.sleep(2)
@@ -781,23 +844,168 @@ def search_emails(service, query, max_results=50):
     return messages
 
 def get_email(service, msg_id):
-    """Get the HTML content of an email."""
-    message = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
-    payload = message['payload']
-    parts = payload.get('parts', [])
-    data = ""
-    
-    if parts:
-        for part in parts:
-            if part['mimeType'] == 'text/html':
-                if 'data' in part['body']:
-                    data = base64.urlsafe_b64decode(part['body']['data']).decode()
-                    break
-    else:
-        if 'data' in payload['body']:
-            data = base64.urlsafe_b64decode(payload['body']['data']).decode()
-    
-    return data
+    """Get the HTML content and metadata of an email with enhanced error handling."""
+    try:
+        logger.debug(f"Fetching email content for message ID: {msg_id}")
+        message = service.users().messages().get(userId='me', id=msg_id, format='full').execute()
+        
+        if not message:
+            logger.warning(f"No message returned for ID: {msg_id}")
+            return {"content": "", "metadata": {}}
+        
+        # Extract metadata from headers
+        metadata = extract_email_metadata(message)
+        
+        payload = message.get('payload', {})
+        if not payload:
+            logger.warning(f"No payload found for message ID: {msg_id}")
+            return {"content": "", "metadata": metadata}
+        
+        # Try to get HTML content
+        html_content = extract_html_content(payload, msg_id)
+        
+        # If no HTML content found, try to get plain text
+        if not html_content:
+            logger.debug(f"No HTML content found for {msg_id}, trying plain text")
+            html_content = extract_text_content(payload, msg_id)
+        
+        logger.debug(f"Extracted {len(html_content)} characters from email {msg_id}")
+        return {"content": html_content, "metadata": metadata}
+        
+    except Exception as e:
+        logger.error(f"Error getting email {msg_id}: {type(e).__name__} - {str(e)}")
+        # Don't re-raise the exception, return empty content to allow processing to continue
+        return {"content": "", "metadata": {}}
+
+def extract_html_content(payload, msg_id):
+    """Extract HTML content from email payload."""
+    try:
+        parts = payload.get('parts', [])
+        
+        if parts:
+            # Multi-part message
+            for part in parts:
+                if part.get('mimeType') == 'text/html':
+                    if 'data' in part.get('body', {}):
+                        data = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+                        return data
+                # Check nested parts (for complex multipart messages)
+                elif part.get('parts'):
+                    nested_content = extract_html_content(part, msg_id)
+                    if nested_content:
+                        return nested_content
+        else:
+            # Single part message
+            if payload.get('mimeType') == 'text/html':
+                if 'data' in payload.get('body', {}):
+                    data = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8')
+                    return data
+        
+        return ""
+        
+    except Exception as e:
+        logger.error(f"Error extracting HTML content from {msg_id}: {str(e)}")
+        return ""
+
+def extract_text_content(payload, msg_id):
+    """Extract plain text content from email payload as fallback."""
+    try:
+        parts = payload.get('parts', [])
+        
+        if parts:
+            # Multi-part message
+            for part in parts:
+                if part.get('mimeType') == 'text/plain':
+                    if 'data' in part.get('body', {}):
+                        data = base64.urlsafe_b64decode(part['body']['data']).decode('utf-8')
+                        return data
+                # Check nested parts
+                elif part.get('parts'):
+                    nested_content = extract_text_content(part, msg_id)
+                    if nested_content:
+                        return nested_content
+        else:
+            # Single part message
+            if payload.get('mimeType') == 'text/plain':
+                if 'data' in payload.get('body', {}):
+                    data = base64.urlsafe_b64decode(payload['body']['data']).decode('utf-8')
+                    return data
+        
+        return ""
+        
+    except Exception as e:
+        logger.error(f"Error extracting text content from {msg_id}: {str(e)}")
+        return ""
+
+def extract_email_metadata(message):
+    """Extract metadata from email headers."""
+    try:
+        metadata = {
+            "sender": "",
+            "sender_name": "",
+            "sender_email": "",
+            "domain": "",
+            "subject": "",
+            "date": ""
+        }
+        
+        # Get headers from the email
+        headers = message.get('payload', {}).get('headers', [])
+        
+        for header in headers:
+            name = header.get('name', '').lower()
+            value = header.get('value', '')
+            
+            if name == 'from':
+                metadata['sender'] = value
+                # Parse sender name and email
+                # Format can be: "Name <email@domain.com>" or just "email@domain.com"
+                import re
+                match = re.match(r'^"?([^"<]*)"?\s*<?([^>]+)>?$', value.strip())
+                if match:
+                    sender_name = match.group(1).strip()
+                    sender_email = match.group(2).strip()
+                    metadata['sender_name'] = sender_name if sender_name else sender_email.split('@')[0]
+                    metadata['sender_email'] = sender_email
+                    # Extract domain
+                    if '@' in sender_email:
+                        metadata['domain'] = sender_email.split('@')[1].lower()
+                else:
+                    # Fallback: treat entire value as email
+                    metadata['sender_email'] = value.strip()
+                    if '@' in value:
+                        metadata['domain'] = value.split('@')[1].lower()
+                        metadata['sender_name'] = value.split('@')[0]
+                    
+            elif name == 'subject':
+                metadata['subject'] = value
+                
+            elif name == 'date':
+                metadata['date'] = value
+        
+        # Clean up sender name - remove quotes, extra spaces
+        metadata['sender_name'] = metadata['sender_name'].strip('"\'').strip()
+        
+        # If no sender name, use the domain as a fallback
+        if not metadata['sender_name'] and metadata['domain']:
+            # Make domain more readable: amazon.com -> Amazon
+            domain_parts = metadata['domain'].split('.')
+            if domain_parts:
+                metadata['sender_name'] = domain_parts[0].capitalize()
+        
+        logger.debug(f"Extracted metadata: {metadata}")
+        return metadata
+        
+    except Exception as e:
+        logger.error(f"Error extracting email metadata: {type(e).__name__} - {str(e)}")
+        return {
+            "sender": "",
+            "sender_name": "",
+            "sender_email": "",
+            "domain": "",
+            "subject": "",
+            "date": ""
+        }
 
 def extract_unsub_links(html):
     """Extract unsubscribe links from HTML content."""
