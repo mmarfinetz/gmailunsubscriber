@@ -526,7 +526,27 @@ def start_unsubscription():
     # For demo purposes, we'll do it synchronously
     try:
         process_unsubscriptions(user_id, search_query, max_emails, g.credentials)
-        return jsonify({"success": True, "message": "Unsubscription process completed"})
+        
+        # Return the updated stats along with success message
+        stats = user_stats.get(user_id, {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        })
+        
+        # Ensure domains_unsubscribed emails are lists not sets for JSON serialization
+        if "domains_unsubscribed" in stats:
+            for domain, data in stats["domains_unsubscribed"].items():
+                emails = data.get("emails", [])
+                if isinstance(emails, set):
+                    stats["domains_unsubscribed"][domain]["emails"] = list(emails)
+        
+        return jsonify({
+            "success": True, 
+            "message": "Unsubscription process completed",
+            "stats": stats
+        })
     except Exception as e:
         logger.error(f"Error in unsubscription process: {e}")
         add_activity(user_id, "error", f"Error in unsubscription process: {str(e)}")

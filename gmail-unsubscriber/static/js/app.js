@@ -648,6 +648,16 @@ function startUnsubscriptionProcess() {
         if (data.success) {
             console.log('Unsubscription process started successfully');
             // Polling already started above
+            
+            // If stats are included in response, update immediately
+            if (data.stats) {
+                console.log('Updating stats from response:', data.stats);
+                updateStatsUI(data.stats);
+            }
+            
+            // Also do a full data refresh to get activities and services
+            console.log('Refreshing all user data after process completion');
+            loadUserData();
         } else {
             throw new Error(data.error || 'Failed to start unsubscription process');
         }
@@ -793,6 +803,13 @@ function finishUnsubscriptionProcess() {
     
     // Reload user data to ensure we have the latest stats
     loadUserData();
+    
+    // Add a small delay then force reload to ensure backend has completely finished
+    // This handles any edge cases where the backend might still be finalizing
+    setTimeout(() => {
+        console.log('Performing final stats refresh after delay');
+        loadUserData();
+    }, 500);
     
     // Show completion message
     const token = localStorage.getItem('auth_token');
