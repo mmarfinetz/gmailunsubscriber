@@ -74,3 +74,17 @@ node_modules
 
 CLAUDE.md
 .env.local
+
+dev-debug.log
+# Dependency directories
+node_modules/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 

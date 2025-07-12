@@ -1,0 +1,336 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Add Minimize Button to Processing Dialog",
+        "description": "Modify the existing processing dialog UI to include a minimize button/icon that allows users to collapse the dialog while processing continues.",
+        "details": "1. Locate the processing dialog component in index.html\n2. Add a minimize button element with appropriate styling (use standard minimize icon)\n3. Position in top-right corner of dialog header\n4. Add appropriate hover effects and accessibility attributes\n5. Ensure the button is visible only when the dialog is in full view\n\nExample HTML:\n```html\n<button id=\"minimize-dialog-btn\" class=\"minimize-btn\" aria-label=\"Minimize dialog\">\n  <i class=\"fa fa-window-minimize\"></i>\n</button>\n```\n\nCSS additions:\n```css\n.minimize-btn {\n  position: absolute;\n  top: 10px;\n  right: 40px; /* Position next to close button if exists */\n  background: transparent;\n  border: none;\n  cursor: pointer;\n  color: #555;\n}\n\n.minimize-btn:hover {\n  color: #000;\n}\n```",
+        "testStrategy": "1. Visual inspection to ensure button appears correctly in the dialog\n2. Test button appearance across different browsers (Chrome, Firefox, Safari)\n3. Verify button is correctly positioned and styled\n4. Check accessibility with screen readers\n5. Verify that the button is only visible when appropriate",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Add minimize button HTML element to dialog header",
+            "description": "Add the minimize button HTML element to the processing dialog header in index.html with appropriate accessibility attributes",
+            "dependencies": [],
+            "details": "Locate the processing dialog component in index.html. Add a button element with id='minimize-dialog-btn' and class='minimize-btn' to the dialog header. Include the Font Awesome minimize icon and set aria-label='Minimize dialog' for accessibility. Position it in the top-right corner, next to the close button if one exists.",
+            "status": "done",
+            "testStrategy": "Verify the button appears in the correct position in the dialog header and has the proper icon and accessibility attributes."
+          },
+          {
+            "id": 2,
+            "title": "Add CSS styling for minimize button",
+            "description": "Create CSS styles for the minimize button including normal state, hover effects, and proper positioning",
+            "dependencies": [
+              1
+            ],
+            "details": "Add CSS rules for the .minimize-btn class in the stylesheet. Set position: absolute, top: 10px, right: 40px to position it next to the close button. Use background: transparent, border: none, cursor: pointer, and color: #555 for styling. Add a hover state with color: #000. Ensure the button is only visible when the dialog is in full view by using appropriate CSS selectors.",
+            "status": "done",
+            "testStrategy": "Test the button's appearance in different states (normal, hover) and verify it's properly positioned and only visible when the dialog is in full view."
+          },
+          {
+            "id": 3,
+            "title": "Implement minimize functionality in JavaScript",
+            "description": "Create the JavaScript function to handle the minimize button click event and collapse the dialog",
+            "dependencies": [
+              1,
+              2
+            ],
+            "details": "Create a function that toggles the dialog between minimized and full view states. When minimized, the dialog should collapse to a smaller size or to just a header bar while keeping the processing indicator visible. Store the dialog state in a variable. Add an event listener to the minimize button that calls this function when clicked.",
+            "status": "done",
+            "testStrategy": "Test that clicking the minimize button correctly collapses the dialog and that the processing indicator remains visible."
+          },
+          {
+            "id": 4,
+            "title": "Add restore functionality for minimized dialog",
+            "description": "Implement the ability to restore the dialog to full size after it has been minimized",
+            "dependencies": [
+              3
+            ],
+            "details": "Add a click handler to the minimized dialog that restores it to full size. Update the minimize button to toggle between minimize and restore icons based on the current state. When minimized, the button should show a restore icon, and when restored, it should show the minimize icon. Update the aria-label accordingly for accessibility.",
+            "status": "done",
+            "testStrategy": "Verify that clicking on the minimized dialog or the restore button properly restores the dialog to its full size and that the button icon and aria-label toggle correctly."
+          },
+          {
+            "id": 5,
+            "title": "Ensure processing continues during minimized state",
+            "description": "Verify and modify code as needed to ensure background processing continues when the dialog is minimized",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "Review the existing processing code to ensure it continues to run when the dialog is minimized. Update any code that might be tied to dialog visibility. Add a visual indicator in the minimized state that shows processing is still ongoing, such as a small spinner or progress bar. Test with long-running processes to ensure they complete successfully regardless of dialog state.",
+            "status": "done",
+            "testStrategy": "Run a long processing task, minimize the dialog, and verify that the task completes successfully. Check that the processing indicator remains visible in the minimized state."
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Implement Dialog Minimize/Restore Functionality",
+        "description": "Add JavaScript functionality to handle the minimize and restore actions for the processing dialog, maintaining the processing state while changing the UI presentation.",
+        "details": "1. Modify app.js to add event listeners for the minimize button\n2. Create functions to handle minimize and restore actions\n3. Store the dialog state (minimized/maximized) in a variable\n4. Use CSS transitions for smooth minimize/maximize effect\n\nPseudo-code:\n```javascript\n// Global state variable\nlet isDialogMinimized = false;\n\n// Add event listener after DOM is loaded\ndocument.addEventListener('DOMContentLoaded', () => {\n  const minimizeBtn = document.getElementById('minimize-dialog-btn');\n  const processingDialog = document.getElementById('processing-dialog');\n  const restoreBtn = document.getElementById('restore-dialog-btn');\n  \n  minimizeBtn.addEventListener('click', () => minimizeDialog(processingDialog));\n  restoreBtn.addEventListener('click', () => restoreDialog(processingDialog));\n});\n\nfunction minimizeDialog(dialog) {\n  isDialogMinimized = true;\n  dialog.classList.add('minimized');\n  showMinimizedIndicator();\n}\n\nfunction restoreDialog(dialog) {\n  isDialogMinimized = false;\n  dialog.classList.remove('minimized');\n  hideMinimizedIndicator();\n}\n```\n\nAdd CSS for minimized state:\n```css\n.processing-dialog.minimized {\n  transform: translateY(calc(100% - 40px));\n  height: 40px;\n  overflow: hidden;\n}\n```",
+        "testStrategy": "1. Unit tests for minimize/restore functions\n2. Integration test to verify dialog state changes correctly\n3. Test that processing continues when dialog is minimized\n4. Verify smooth transition animations\n5. Test edge cases like rapidly toggling minimize/restore\n6. Verify dialog state is preserved during page interactions",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create HTML structure for minimize/restore functionality",
+            "description": "Add the necessary HTML elements for the minimize and restore buttons, and create the structure for the minimized indicator that will be shown when the dialog is minimized.",
+            "dependencies": [],
+            "details": "1. Add a minimize button to the processing dialog header\n2. Create a hidden minimized indicator element that will appear at the bottom of the screen when dialog is minimized\n3. Add a restore button to the minimized indicator\n4. Ensure all elements have appropriate IDs for JavaScript selection\n5. Add ARIA attributes for accessibility",
+            "status": "pending",
+            "testStrategy": "Verify that all elements are properly rendered in the DOM and have the correct initial visibility states."
+          },
+          {
+            "id": 2,
+            "title": "Implement CSS styles for dialog states",
+            "description": "Create CSS styles to handle the visual appearance of the dialog in both normal and minimized states, including transitions for smooth animation effects.",
+            "dependencies": [],
+            "details": "1. Style the minimize and restore buttons\n2. Create the .minimized class for the processing dialog with transform and height properties\n3. Style the minimized indicator to appear at the bottom of the viewport\n4. Add CSS transitions for smooth animation between states\n5. Ensure the dialog remains visible and accessible in both states\n6. Add hover effects for better UX",
+            "status": "pending",
+            "testStrategy": "Test the CSS transitions with different browsers to ensure consistent behavior. Verify that the minimized state is correctly styled and positioned."
+          },
+          {
+            "id": 3,
+            "title": "Implement core minimize/restore JavaScript functionality",
+            "description": "Create the JavaScript functions to handle the state changes when minimizing and restoring the dialog, including updating the global state variable.",
+            "dependencies": [],
+            "details": "1. Create a global isDialogMinimized state variable initialized to false\n2. Implement the minimizeDialog function to add the 'minimized' class to the dialog and update the state\n3. Implement the restoreDialog function to remove the 'minimized' class and update the state\n4. Add logic to preserve the processing state while changing the UI presentation\n5. Implement functions to show/hide the minimized indicator",
+            "status": "pending",
+            "testStrategy": "Test the state transitions by manually triggering the functions and verifying the DOM changes and state variable updates."
+          },
+          {
+            "id": 4,
+            "title": "Add event listeners for user interactions",
+            "description": "Set up event listeners to connect the UI elements with the JavaScript functionality, ensuring the minimize and restore actions respond to user clicks.",
+            "dependencies": [],
+            "details": "1. Add a DOMContentLoaded event listener to ensure the DOM is fully loaded\n2. Select the minimize button, restore button, and processing dialog elements using their IDs\n3. Attach click event listeners to the minimize button that calls minimizeDialog\n4. Attach click event listeners to the restore button that calls restoreDialog\n5. Add keyboard event listeners for accessibility (Escape key to restore)",
+            "status": "pending",
+            "testStrategy": "Test clicking on buttons to verify event listeners are properly attached. Test keyboard shortcuts for accessibility compliance."
+          },
+          {
+            "id": 5,
+            "title": "Implement state persistence during page interactions",
+            "description": "Ensure the dialog state persists correctly during other page interactions and that the processing state is maintained when the dialog is minimized.",
+            "dependencies": [],
+            "details": "1. Modify any existing dialog-related functions to check the isDialogMinimized state\n2. Update the processing status display to work in both minimized and normal states\n3. Add logic to handle cases where the dialog might be minimized when new processing starts\n4. Implement a small indicator in the minimized state to show processing progress\n5. Add a function to automatically restore the dialog when processing completes\n6. Consider adding session storage to persist the state across page refreshes",
+            "status": "pending",
+            "testStrategy": "Test various scenarios including: minimizing during active processing, starting new processing while minimized, and interaction with other page elements while dialog is minimized."
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "Create Minimized Progress Indicator",
+        "description": "Develop a compact progress indicator or toast notification that shows processing status when the dialog is minimized.",
+        "details": "1. Create HTML/CSS for a minimized indicator showing current progress\n2. Ensure indicator is only visible when dialog is minimized\n3. Show processing count/percentage in the indicator\n4. Add a restore button to the indicator\n\nHTML structure:\n```html\n<div id=\"minimized-indicator\" class=\"progress-indicator hidden\">\n  <div class=\"progress-text\">Processing: <span id=\"progress-count\">0</span>/<span id=\"total-count\">0</span></div>\n  <div class=\"progress-bar\">\n    <div id=\"progress-fill\" class=\"progress-fill\"></div>\n  </div>\n  <button id=\"restore-dialog-btn\" class=\"restore-btn\" aria-label=\"Restore dialog\">\n    <i class=\"fa fa-window-maximize\"></i>\n  </button>\n</div>\n```\n\nCSS:\n```css\n.progress-indicator {\n  position: fixed;\n  bottom: 20px;\n  right: 20px;\n  background: #fff;\n  border: 1px solid #ddd;\n  border-radius: 4px;\n  padding: 8px 12px;\n  box-shadow: 0 2px 10px rgba(0,0,0,0.1);\n  display: flex;\n  align-items: center;\n  z-index: 1000;\n}\n\n.progress-indicator.hidden {\n  display: none;\n}\n\n.progress-bar {\n  width: 100px;\n  height: 8px;\n  background: #eee;\n  border-radius: 4px;\n  margin: 0 10px;\n  overflow: hidden;\n}\n\n.progress-fill {\n  height: 100%;\n  background: #4285f4;\n  width: 0%;\n  transition: width 0.3s ease;\n}\n\n.restore-btn {\n  background: transparent;\n  border: none;\n  cursor: pointer;\n  color: #555;\n}\n```\n\nJavaScript to update indicator:\n```javascript\nfunction showMinimizedIndicator() {\n  const indicator = document.getElementById('minimized-indicator');\n  indicator.classList.remove('hidden');\n  updateProgressIndicator(); // Initial update\n}\n\nfunction hideMinimizedIndicator() {\n  const indicator = document.getElementById('minimized-indicator');\n  indicator.classList.add('hidden');\n}\n\nfunction updateProgressIndicator() {\n  if (!isDialogMinimized) return;\n  \n  const progressCount = document.getElementById('progress-count');\n  const totalCount = document.getElementById('total-count');\n  const progressFill = document.getElementById('progress-fill');\n  \n  // Get current progress from the main processing logic\n  const current = getCurrentProcessedCount();\n  const total = getTotalEmailsCount();\n  \n  progressCount.textContent = current;\n  totalCount.textContent = total;\n  \n  const percentage = (current / total) * 100;\n  progressFill.style.width = `${percentage}%`;\n}\n```",
+        "testStrategy": "1. Test visibility toggling of the indicator\n2. Verify progress updates correctly reflect processing status\n3. Test responsiveness on different screen sizes\n4. Verify the restore button correctly maximizes the dialog\n5. Test with different progress values (0%, 50%, 100%)\n6. Verify indicator appears in the correct z-index layer",
+        "priority": "medium",
+        "dependencies": [
+          2
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement HTML/CSS for minimized progress indicator",
+            "description": "Create the HTML structure and CSS styling for the minimized progress indicator that will be shown when the dialog is minimized.",
+            "dependencies": [],
+            "details": "Add the provided HTML structure to the main HTML file, ensuring proper element IDs and classes. Include the CSS styles in the stylesheet, making sure the indicator is positioned correctly at the bottom right of the screen. Verify that the .hidden class properly hides the element and that the progress bar styling works as expected.",
+            "status": "pending",
+            "testStrategy": "Manually verify the indicator's appearance by adding it to the DOM and toggling the hidden class. Check that it's responsive and displays correctly on different screen sizes."
+          },
+          {
+            "id": 2,
+            "title": "Create show/hide functionality for the indicator",
+            "description": "Implement the JavaScript functions to show and hide the minimized indicator based on the dialog state.",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement the showMinimizedIndicator() and hideMinimizedIndicator() functions that toggle the 'hidden' class on the indicator element. Add a global variable 'isDialogMinimized' to track the dialog state. Connect these functions to the dialog minimize/restore actions in the existing code.",
+            "status": "pending",
+            "testStrategy": "Test by manually triggering the minimize and restore actions and verifying the indicator appears and disappears appropriately."
+          },
+          {
+            "id": 3,
+            "title": "Implement progress tracking and display logic",
+            "description": "Create the functionality to update the progress indicator with current processing status.",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement the updateProgressIndicator() function that updates the progress count, total count, and progress bar fill based on the current processing state. Ensure this function is called whenever the processing status changes. Connect to the existing getCurrentProcessedCount() and getTotalEmailsCount() functions or implement them if they don't exist.",
+            "status": "pending",
+            "testStrategy": "Test with mock data by manually setting different progress values and verifying the indicator updates correctly. Test edge cases like 0%, 100%, and values in between."
+          },
+          {
+            "id": 4,
+            "title": "Add restore button functionality",
+            "description": "Implement the click handler for the restore button in the minimized indicator to maximize the dialog.",
+            "dependencies": [
+              2
+            ],
+            "details": "Add an event listener to the 'restore-dialog-btn' that calls a function to restore the dialog to its normal state. This should set isDialogMinimized to false, hide the minimized indicator, and show the full dialog. Ensure proper connection with the existing dialog management code.",
+            "status": "pending",
+            "testStrategy": "Test by clicking the restore button and verifying the dialog returns to its maximized state and the indicator disappears."
+          },
+          {
+            "id": 5,
+            "title": "Integrate indicator with main processing workflow",
+            "description": "Connect the progress indicator to the main email processing workflow to ensure real-time updates.",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "Modify the main processing function to call updateProgressIndicator() after each email is processed. Ensure the indicator is properly shown when the dialog is minimized during processing and hidden when processing completes or the dialog is restored. Add any necessary event listeners to handle dialog state changes.",
+            "status": "pending",
+            "testStrategy": "Perform end-to-end testing by initiating the email processing workflow, minimizing the dialog, and verifying the indicator appears with accurate progress information. Test the entire flow from start to completion."
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Implement Real-time Dashboard Updates",
+        "description": "Modify the existing dashboard to update in real-time as emails are processed, allowing users to see progress while the processing dialog is minimized.",
+        "details": "1. Identify the dashboard update mechanism in the existing code\n2. Modify to support real-time updates during processing\n3. Implement polling or WebSocket connection if not already present\n4. Ensure updates don't interfere with ongoing processing\n\nPseudo-code for polling approach:\n```javascript\nlet dashboardUpdateInterval;\n\nfunction startProcessingEmails() {\n  // Existing processing initialization code\n  \n  // Start dashboard updates\n  startDashboardUpdates();\n}\n\nfunction startDashboardUpdates() {\n  // Clear any existing interval\n  if (dashboardUpdateInterval) clearInterval(dashboardUpdateInterval);\n  \n  // Update every 2 seconds\n  dashboardUpdateInterval = setInterval(() => {\n    updateDashboardStats();\n  }, 2000);\n}\n\nfunction updateDashboardStats() {\n  // Get current processing stats\n  const stats = getProcessingStats();\n  \n  // Update UI elements\n  document.getElementById('unsubscribed-count').textContent = stats.unsubscribedCount;\n  document.getElementById('processed-count').textContent = stats.processedCount;\n  document.getElementById('error-count').textContent = stats.errorCount;\n  \n  // Update any charts or visualizations\n  updateCharts(stats);\n  \n  // Also update the minimized indicator if visible\n  updateProgressIndicator();\n}\n\nfunction completeProcessing() {\n  // Existing completion code\n  \n  // Stop dashboard updates\n  if (dashboardUpdateInterval) {\n    clearInterval(dashboardUpdateInterval);\n    dashboardUpdateInterval = null;\n  }\n  \n  // Final dashboard update\n  updateDashboardStats();\n}\n```\n\nFor WebSocket approach (if applicable):\n```javascript\nlet dashboardSocket;\n\nfunction initializeWebSocketConnection() {\n  dashboardSocket = new WebSocket('ws://your-server/dashboard-updates');\n  \n  dashboardSocket.onmessage = (event) => {\n    const stats = JSON.parse(event.data);\n    updateDashboardWithStats(stats);\n  };\n  \n  dashboardSocket.onerror = (error) => {\n    console.error('WebSocket error:', error);\n    // Fall back to polling\n    startDashboardUpdates();\n  };\n}\n```",
+        "testStrategy": "1. Test dashboard updates with various processing speeds\n2. Verify updates occur at appropriate intervals\n3. Test with large numbers of emails to ensure performance\n4. Verify updates continue when dialog is minimized\n5. Test error handling for failed updates\n6. Measure performance impact of updates on processing speed\n7. Test WebSocket reconnection logic if applicable",
+        "priority": "medium",
+        "dependencies": [
+          2
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create a ProcessingStats Service",
+            "description": "Implement a service that tracks and provides access to email processing statistics in real-time",
+            "dependencies": [],
+            "details": "Create a ProcessingStatsService class that maintains counters for processed, unsubscribed, and error emails. Implement methods to increment these counters during processing and retrieve current stats. The service should be a singleton accessible throughout the application. Include a method to register listeners for stats updates.",
+            "status": "pending",
+            "testStrategy": "Unit test the service with mock data to ensure counters increment correctly and listeners are notified appropriately"
+          },
+          {
+            "id": 2,
+            "title": "Implement Dashboard Update Mechanism",
+            "description": "Create the core functionality to update the dashboard UI based on processing statistics",
+            "dependencies": [
+              1
+            ],
+            "details": "Implement the updateDashboardStats() function that retrieves current stats from the ProcessingStatsService and updates all relevant UI elements. This should update counters, progress bars, and any charts or visualizations. Ensure the function is optimized to avoid unnecessary DOM updates if values haven't changed.",
+            "status": "pending",
+            "testStrategy": "Create unit tests with mock DOM elements to verify UI updates correctly reflect the stats data"
+          },
+          {
+            "id": 3,
+            "title": "Add Real-time Update Polling",
+            "description": "Implement a polling mechanism to regularly update the dashboard during email processing",
+            "dependencies": [
+              2
+            ],
+            "details": "Implement the startDashboardUpdates() and related functions to establish a polling interval that calls updateDashboardStats() every 2 seconds. Include proper cleanup in the completeProcessing() function to prevent memory leaks. Add safeguards to prevent multiple polling intervals from being created.",
+            "status": "pending",
+            "testStrategy": "Test that polling starts and stops correctly, and that the dashboard updates at the expected intervals"
+          },
+          {
+            "id": 4,
+            "title": "Create Minimized Progress Indicator",
+            "description": "Implement a compact progress indicator that shows processing status when the main dialog is minimized",
+            "dependencies": [
+              2
+            ],
+            "details": "Design and implement a small, unobtrusive UI element that appears when the processing dialog is minimized. This should show key stats (emails processed, success rate) and have a visual progress indicator. Implement the updateProgressIndicator() function to keep this element in sync with the main dashboard.",
+            "status": "pending",
+            "testStrategy": "Test the indicator visibility toggling and verify it displays accurate information from the stats service"
+          },
+          {
+            "id": 5,
+            "title": "Integrate Real-time Updates with Email Processing Workflow",
+            "description": "Connect the real-time update system with the existing email processing workflow",
+            "dependencies": [
+              1,
+              3,
+              4
+            ],
+            "details": "Modify the existing email processing functions to update the ProcessingStatsService as emails are processed. Hook the startProcessingEmails() and completeProcessing() functions to start and stop dashboard updates. Ensure updates don't interfere with processing performance by using requestAnimationFrame or throttling if necessary. Add error handling to gracefully degrade if updates cause issues.",
+            "status": "pending",
+            "testStrategy": "Perform integration testing with simulated email processing to verify the entire system works together correctly. Test edge cases like processing being interrupted or errors occurring during updates."
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "title": "Integration Testing and Performance Optimization",
+        "description": "Perform comprehensive testing of the minimize feature integration with the existing application, optimize performance, and refine the user experience based on testing results.",
+        "details": "1. Integrate all components (minimize button, indicator, real-time updates)\n2. Test the complete user flow from start to finish\n3. Optimize update frequency based on performance testing\n4. Add debouncing for UI updates to prevent performance issues\n5. Implement error handling for edge cases\n\nPerformance optimization:\n```javascript\n// Debounce function to limit update frequency\nfunction debounce(func, wait) {\n  let timeout;\n  return function(...args) {\n    clearTimeout(timeout);\n    timeout = setTimeout(() => func.apply(this, args), wait);\n  };\n}\n\n// Apply debouncing to dashboard updates\nconst debouncedUpdateDashboard = debounce(updateDashboardStats, 300);\n\n// Use in high-frequency update scenarios\nfunction processEmailBatch(emails) {\n  emails.forEach(email => {\n    processEmail(email);\n    // Instead of updating after each email\n    debouncedUpdateDashboard();\n  });\n}\n```\n\nError handling improvements:\n```javascript\nfunction minimizeDialog(dialog) {\n  try {\n    isDialogMinimized = true;\n    dialog.classList.add('minimized');\n    showMinimizedIndicator();\n  } catch (error) {\n    console.error('Error minimizing dialog:', error);\n    // Fallback - hide dialog completely if minimize fails\n    dialog.style.display = 'none';\n    showMinimizedIndicator();\n  }\n}\n\n// Add global error handler for processing\nwindow.addEventListener('error', (event) => {\n  if (isProcessingActive) {\n    // Log error but don't stop processing\n    logProcessingError(event.error);\n    event.preventDefault();\n  }\n});\n```\n\nUser experience refinements:\n```javascript\n// Add keyboard shortcut for minimize/restore\ndocument.addEventListener('keydown', (event) => {\n  if (event.key === 'Escape' && isProcessingActive) {\n    if (isDialogMinimized) {\n      restoreDialog(document.getElementById('processing-dialog'));\n    } else {\n      minimizeDialog(document.getElementById('processing-dialog'));\n    }\n  }\n});\n\n// Add smooth transitions\ndocument.getElementById('processing-dialog').style.transition = 'transform 0.3s ease, height 0.3s ease';\n```",
+        "testStrategy": "1. End-to-end testing of the complete user flow\n2. Performance testing with large datasets (1000+ emails)\n3. Browser compatibility testing across major browsers\n4. Mobile responsiveness testing\n5. Memory leak detection during long processing sessions\n6. A/B testing of different update frequencies to find optimal balance\n7. User acceptance testing with actual Gmail users\n8. Accessibility testing for keyboard navigation and screen readers",
+        "priority": "high",
+        "dependencies": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "status": "pending",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Component Integration and Basic Flow Testing",
+            "description": "Integrate all minimize feature components (button, indicator, real-time updates) with the existing application and test the basic user flow.",
+            "dependencies": [],
+            "details": "1. Connect the minimize button to the minimizeDialog function\n2. Implement the showMinimizedIndicator function to display when dialogs are minimized\n3. Connect the restore functionality to the minimized indicator\n4. Ensure real-time updates continue to function when dialogs are minimized\n5. Test the basic flow of minimizing and restoring dialogs manually",
+            "status": "pending",
+            "testStrategy": "Manual testing of the minimize/restore flow with different dialogs. Create a test checklist covering all user interactions."
+          },
+          {
+            "id": 2,
+            "title": "Implement Debouncing for UI Updates",
+            "description": "Add debouncing functionality to prevent performance issues during high-frequency updates to the dashboard.",
+            "dependencies": [],
+            "details": "1. Implement the debounce utility function as provided in the example\n2. Apply debouncing to dashboard update functions (updateDashboardStats)\n3. Identify all high-frequency update scenarios in the application\n4. Modify these scenarios to use the debounced update function\n5. Verify that UI remains responsive during batch operations",
+            "status": "pending",
+            "testStrategy": "Test with simulated high-frequency events (e.g., rapid email processing). Measure and compare UI responsiveness with and without debouncing."
+          },
+          {
+            "id": 3,
+            "title": "Implement Error Handling for Edge Cases",
+            "description": "Add comprehensive error handling for the minimize feature to gracefully handle edge cases and prevent application crashes.",
+            "dependencies": [],
+            "details": "1. Implement try-catch blocks in the minimizeDialog and restoreDialog functions\n2. Add the global error handler for processing operations\n3. Create the logProcessingError function to record errors without interrupting workflow\n4. Implement fallback behaviors when minimize/restore operations fail\n5. Test error scenarios by deliberately causing failures",
+            "status": "pending",
+            "testStrategy": "Create test cases for each potential failure point. Verify that the application gracefully handles DOM manipulation errors, state inconsistencies, and concurrent operation issues."
+          },
+          {
+            "id": 4,
+            "title": "Enhance User Experience with Keyboard Shortcuts and Transitions",
+            "description": "Improve the user experience by adding keyboard shortcuts for minimize/restore operations and smooth visual transitions.",
+            "dependencies": [],
+            "details": "1. Implement the keyboard event listener for Escape key as shown in the example\n2. Add smooth CSS transitions for the minimize/restore animations\n3. Ensure transitions work consistently across different browsers\n4. Add visual feedback when keyboard shortcuts are used\n5. Update any user documentation to include information about keyboard shortcuts",
+            "status": "pending",
+            "testStrategy": "Test keyboard shortcuts in different contexts and browsers. Gather user feedback on the smoothness and intuitiveness of transitions."
+          },
+          {
+            "id": 5,
+            "title": "Conduct Performance Optimization and Comprehensive Testing",
+            "description": "Optimize the update frequency based on performance testing and conduct comprehensive end-to-end testing of the minimize feature integration.",
+            "dependencies": [],
+            "details": "1. Measure baseline performance metrics for dashboard updates\n2. Experiment with different debounce timing values (currently 300ms) to find optimal balance\n3. Implement the processEmailBatch function with optimized update frequency\n4. Create automated tests for the complete minimize feature workflow\n5. Document performance improvements and any known limitations",
+            "status": "pending",
+            "testStrategy": "Perform load testing with large data sets. Measure key performance indicators like time to update, CPU usage, and memory consumption. Create end-to-end tests covering all user flows and edge cases."
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "created": "2025-07-12T19:27:05.186Z",
+      "updated": "2025-07-12T19:33:08.504Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

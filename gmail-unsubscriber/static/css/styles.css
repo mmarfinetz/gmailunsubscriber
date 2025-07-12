@@ -536,6 +536,22 @@ header {
   color: hsl(var(--foreground));
 }
 
+.modal-minimize {
+  background: none;
+  border: none;
+  font-size: 1.5rem;
+  cursor: pointer;
+  color: hsl(var(--muted-foreground));
+  transition: var(--transition);
+  padding: 0.5rem;
+  border-radius: calc(var(--radius) - 2px);
+}
+
+.modal-minimize:hover {
+  background-color: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
 .modal-body {
   padding: 1.5rem;
 }
@@ -546,6 +562,32 @@ header {
   display: flex;
   justify-content: flex-end;
   gap: 0.75rem;
+}
+
+.modal.minimized .modal-body,
+.modal.minimized .modal-footer {
+  display: none;
+}
+
+.modal.minimized {
+  transition: all 0.2s ease-in-out;
+}
+
+.minimized-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.modal:not(.minimized) .minimized-indicator {
+  display: none !important;
+}
+
+.small.spinner {
+  width: 20px;
+  height: 20px;
+  border-width: 3px;
 }
 
 /* Form Elements */

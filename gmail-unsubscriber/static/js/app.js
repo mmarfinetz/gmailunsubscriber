@@ -22,11 +22,9 @@ const authBtn = document.getElementById('auth-btn');
 const logoutBtn = document.getElementById('logout-btn');
 const actionButton = document.getElementById('action-button');
 const runModal = document.getElementById('run-modal');
-const processingModal = document.getElementById('processing-modal');
 const modalClose = document.getElementById('modal-close');
 const cancelRunBtn = document.getElementById('cancel-run');
 const startRunBtn = document.getElementById('start-run');
-const stopProcessingBtn = document.getElementById('stop-processing');
 const activityList = document.getElementById('activity-list');
 const activityPlaceholder = document.getElementById('activity-placeholder');
 
@@ -38,15 +36,13 @@ const progressBar = document.getElementById('progress-bar');
 const progressPercentage = document.getElementById('progress-percentage');
 const emailsProcessed = document.getElementById('emails-processed');
 const emailsRemaining = document.getElementById('emails-remaining');
-const processingProgressBar = document.getElementById('processing-progress-bar');
-const processingStatus = document.getElementById('processing-status');
-const processingCount = document.getElementById('processing-count');
 
 // State variables
 let isProcessing = false;
 let processedEmails = 0;
 let totalEmailsToProcess = 0;
 let statusCheckInterval = null;
+let currentProcessingStatus = 'idle';
 
 // Initialize the application
 function initApp() {
@@ -156,10 +152,8 @@ function setupEventListeners() {
     
     // Start run button
     startRunBtn.addEventListener('click', startUnsubscriptionProcess);
-    
-    // Stop processing button
-    stopProcessingBtn.addEventListener('click', stopUnsubscriptionProcess);
 }
+
 
 // Handle authentication with Google
 function handleAuth() {
@@ -298,17 +292,40 @@ function updateStatsUI(stats) {
     totalUnsubscribed.textContent = stats.total_unsubscribed || 0;
     timeSaved.textContent = stats.time_saved || 0;
     
-    // Update progress bar
-    const progress = stats.total_scanned > 0 
-        ? Math.round((stats.total_unsubscribed / stats.total_scanned) * 100) 
-        : 0;
+    // Update progress bar based on processing state
+    let progress = 0;
+    if (isProcessing && totalEmailsToProcess > 0) {
+        // During processing, show progress based on emails processed vs total to process
+        progress = Math.round(((stats.total_scanned || 0) / totalEmailsToProcess) * 100);
+    } else if (stats.total_scanned > 0) {
+        // When not processing, show unsubscribe success rate
+        progress = Math.round((stats.total_unsubscribed / stats.total_scanned) * 100);
+    }
     
-    progressBar.style.width = `${progress}%`;
-    progressPercentage.textContent = `${progress}%`;
+    progressBar.style.width = `${Math.min(progress, 100)}%`;
+    progressPercentage.textContent = `${Math.min(progress, 100)}%`;
     
     // Update emails processed/remaining
-    emailsProcessed.textContent = `${stats.total_scanned || 0} processed`;
-    emailsRemaining.textContent = `${Math.max(0, processedEmails - (stats.total_scanned || 0))} remaining`;
+    if (isProcessing && totalEmailsToProcess > 0) {
+        const remaining = Math.max(0, totalEmailsToProcess - (stats.total_scanned || 0));
+        emailsProcessed.textContent = `${stats.total_scanned || 0} processed`;
+        emailsRemaining.textContent = `${remaining} remaining`;
+        
+        // Update processing status in progress header
+        const progressHeader = document.querySelector('.progress-header h3');
+        if (progressHeader) {
+            progressHeader.textContent = `Processing Progress - ${currentProcessingStatus}`;
+        }
+    } else {
+        emailsProcessed.textContent = `${stats.total_scanned || 0} processed`;
+        emailsRemaining.textContent = `0 remaining`;
+        
+        // Reset progress header
+        const progressHeader = document.querySelector('.progress-header h3');
+        if (progressHeader) {
+            progressHeader.textContent = 'Unsubscription Progress';
+        }
+    }
 }
 
 // Update activities UI
@@ -594,19 +611,21 @@ function startUnsubscriptionProcess() {
     localStorage.removeItem('failedUnsubscribeServices');
     updateManualUnsubscribeVisibility(false);
     
-    // Close run modal and show processing modal
+    // Close run modal
     runModal.classList.remove('active');
-    processingModal.classList.add('active');
     
     // Set processing state
     isProcessing = true;
     processedEmails = 0;
     totalEmailsToProcess = maxEmails;
+    currentProcessingStatus = 'Starting unsubscription process...';
     
-    // Update UI
-    processingStatus.textContent = 'Starting unsubscription process...';
-    processingCount.textContent = `Processed: 0 / ${maxEmails}`;
-    processingProgressBar.style.width = '0%';
+    // Update dashboard immediately to show processing state
+    updateStatsUI({
+        total_scanned: 0,
+        total_unsubscribed: 0,
+        time_saved: 0
+    });
     
     // Start polling immediately since backend is now async
     startStatusPolling();
@@ -635,7 +654,14 @@ function startUnsubscriptionProcess() {
     })
     .catch(error => {
         console.error('Error starting unsubscription process:', error);
-        processingStatus.textContent = `Error: ${error.message}`;
+        currentProcessingStatus = `Error: ${error.message}`;
+        
+        // Update dashboard to show error
+        updateStatsUI({
+            total_scanned: 0,
+            total_unsubscribed: 0,
+            time_saved: 0
+        });
         
         // Stop processing after a delay
         setTimeout(() => {
@@ -707,19 +733,12 @@ function startStatusPolling() {
                 const progress = data.processing.progress;
                 const currentEmailInfo = progress.current_email_info;
                 
-                // Update progress bar
-                const progressPercentage = totalEmailsToProcess > 0 
-                    ? Math.round((progress.current_email / totalEmailsToProcess) * 100) 
-                    : 0;
-                
-                processingProgressBar.style.width = `${Math.min(progressPercentage, 100)}%`;
-                processingCount.textContent = `Processed: ${progress.current_email} / ${totalEmailsToProcess}`;
-                
                 // Update status with current email info
                 if (currentEmailInfo) {
-                    const statusMessage = currentEmailInfo.message || 
+                    currentProcessingStatus = currentEmailInfo.message || 
                         `Processing ${currentEmailInfo.sender || 'email'}...`;
-                    processingStatus.textContent = statusMessage;
+                } else {
+                    currentProcessingStatus = `Processing emails... (${processed}/${totalEmailsToProcess})`;
                 }
                 
                 // Check if process is complete
@@ -727,13 +746,8 @@ function startStatusPolling() {
                     finishUnsubscriptionProcess();
                 }
             } else {
-                // Fallback to old method if no processing data
-                const progress = totalEmailsToProcess > 0 
-                    ? Math.round((processed / totalEmailsToProcess) * 100) 
-                    : 0;
-                
-                processingProgressBar.style.width = `${Math.min(progress, 100)}%`;
-                processingCount.textContent = `Processed: ${processed} / ${totalEmailsToProcess}`;
+                // Update status based on current progress
+                currentProcessingStatus = `Processing emails... (${processed}/${totalEmailsToProcess})`;
                 
                 // Check if process is complete
                 if (processed >= totalEmailsToProcess) {
@@ -753,6 +767,7 @@ function stopUnsubscriptionProcess() {
     
     // Set processing state
     isProcessing = false;
+    currentProcessingStatus = 'idle';
     
     // Clear polling interval
     if (statusCheckInterval) {
@@ -760,23 +775,21 @@ function stopUnsubscriptionProcess() {
         statusCheckInterval = null;
     }
     
-    // Close processing modal
-    processingModal.classList.remove('active');
+    // Update dashboard to show stopped state
+    loadUserData();
 }
 
 // Finish the unsubscription process
 function finishUnsubscriptionProcess() {
     // Set processing state
     isProcessing = false;
+    currentProcessingStatus = 'idle';
     
     // Clear polling interval
     if (statusCheckInterval) {
         clearInterval(statusCheckInterval);
         statusCheckInterval = null;
     }
-    
-    // Close processing modal
-    processingModal.classList.remove('active');
     
     // Reload user data to ensure we have the latest stats
     loadUserData();
