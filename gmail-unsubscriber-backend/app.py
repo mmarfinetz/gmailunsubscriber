@@ -17,6 +17,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, redirect, g, session
 import jwt
 from flask_cors import CORS
+from werkzeug.middleware.proxy_fix import ProxyFix
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import Flow
 from google.auth.transport.requests import Request
@@ -28,6 +29,16 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Set insecure transport for OAuth in development only
+# WARNING: This should NEVER be enabled in production!
+if os.environ.get('ENVIRONMENT') == 'development' or (
+    os.environ.get('ENVIRONMENT') is None and 
+    os.environ.get('FRONTEND_URL', '').startswith('http://localhost')
+):
+    os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+    print("WARNING: Running in development mode with OAUTHLIB_INSECURE_TRANSPORT enabled.")
+    print("This allows OAuth over HTTP but should NEVER be used in production!")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +49,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Log insecure transport warning if enabled
+if os.environ.get('OAUTHLIB_INSECURE_TRANSPORT') == '1':
+    logger.warning("OAUTHLIB_INSECURE_TRANSPORT is enabled - OAuth will work over HTTP.")
+    logger.warning("This is for development only and must NOT be used in production!")
 
 # Import Claude chat functionality
 try:
@@ -59,13 +75,24 @@ oauth_logger.addHandler(handler)
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(16))
 
+# Add ProxyFix middleware to handle X-Forwarded headers properly
+# This helps with proxy/load balancer scenarios like Railway
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
 # Configure Flask session for OAuth state management
+# Different settings for development vs production
+is_production = os.environ.get('ENVIRONMENT') == 'production'
+is_https = not (os.environ.get('FRONTEND_URL', '').startswith('http://localhost') or 
+               os.environ.get('ENVIRONMENT') == 'development')
+
 app.config.update(
-    SESSION_COOKIE_SECURE=False,  # Set to True for HTTPS in production
+    SESSION_COOKIE_SECURE=is_https,  # Only secure in HTTPS environments
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax',  # Critical for OAuth redirects
+    SESSION_COOKIE_SAMESITE='None' if is_production else 'Lax',  # 'None' for cross-origin in production
     PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
-    SESSION_COOKIE_DOMAIN=None  # Don't set for localhost development
+    SESSION_COOKIE_DOMAIN=None,  # Don't set for localhost development
+    SESSION_COOKIE_NAME='gmail_unsubscriber_session',  # Custom session name
+    SESSION_COOKIE_PATH='/'  # Ensure cookie is available for all paths
 )
 
 # Enable CORS with restricted origins
@@ -78,6 +105,11 @@ allowed_origins = [
     'https://gmail-unsubscriber-frontend.vercel.app',
     'https://gmail-unsubscriber-frontend-ftrl3114t-mmarfinetzs-projects.vercel.app',
     'https://gmail-unsubscriber-frontend-cghhingxm-mmarfinetzs-projects.vercel.app',
+    # Railway deployment URLs
+    'https://gmailunsubscriber-production.up.railway.app',
+    'https://gmail-unsubscriber-backend.up.railway.app',
+    # Regex pattern for all Railway subdomains
+    r'^https://.*\.railway\.app$',
 ]
 
 # Add localhost origins for development
@@ -86,26 +118,28 @@ if os.environ.get('ENVIRONMENT') == 'development':
         'http://localhost:8000',
         'http://127.0.0.1:8000',
         'http://localhost:3000',  # Common React dev server port
-        'http://127.0.0.1:3000'
+        'http://127.0.0.1:3000',
+        'http://[::1]:8000',  # IPv6 localhost
+        'http://[::]:8000',  # IPv6 all interfaces
+        r'^http://\[.*\]:8000$',  # Regex for any IPv6 address on port 8000
     ])
     oauth_logger.debug(f"Development mode: Added localhost origins to CORS")
-
-# Add Railway domain patterns if environment is production
-if os.environ.get('ENVIRONMENT') == 'production':
-    # Allow Railway domains (*.railway.app)
-    allowed_origins.extend([
-        'https://*.railway.app',
-        # Add specific Railway domains if needed
-    ])
 
 CORS(app, 
      origins=allowed_origins,
      supports_credentials=True,
-     allow_headers=["Content-Type", "Authorization"],
-     methods=["GET", "POST", "OPTIONS"])
+     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+     methods=["GET", "POST", "OPTIONS"],
+     expose_headers=["Set-Cookie"],
+     max_age=600  # Cache preflight requests for 10 minutes
+)
 
 # Gmail API settings
-SCOPES = ['https://www.googleapis.com/auth/gmail.modify']
+SCOPES = [
+    'openid',  # Google automatically adds this when requesting userinfo.email
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/userinfo.email'
+]
 API_SERVICE_NAME = 'gmail'
 API_VERSION = 'v1'
 
@@ -130,6 +164,39 @@ CLIENT_CONFIG = {
 if os.environ.get('ENVIRONMENT') == 'development':
     with open('client_secrets.json', 'w') as f:
         json.dump(CLIENT_CONFIG, f)
+
+def get_redirect_uri(request):
+    """Determine the correct redirect URI based on the request origin."""
+    # Hardcode for production to avoid any detection issues
+    if os.environ.get('ENVIRONMENT') == 'production':
+        return 'https://gmailunsubscriber-production.up.railway.app/oauth2callback'
+    
+    # Existing logic for dev (dynamic detection)
+    host = request.headers.get('Host', 'localhost:5000')
+    scheme = 'https' if request.is_secure else 'http'
+    
+    # Handle X-Forwarded headers for proxy/load balancer scenarios
+    forwarded_proto = request.headers.get('X-Forwarded-Proto')
+    if forwarded_proto:
+        scheme = forwarded_proto
+    
+    forwarded_host = request.headers.get('X-Forwarded-Host')
+    if forwarded_host:
+        host = forwarded_host
+    
+    # For local development, always use localhost:5000 for consistency
+    # This ensures the OAuth callback matches regardless of how the frontend is accessed
+    if host in ['[::1]:5000', '[::]:5000', '127.0.0.1:5000'] or 'localhost' in host:
+        host = 'localhost:5000'
+    
+    # Construct the redirect URI
+    redirect_uri = f"{scheme}://{host}/oauth2callback"
+    
+    oauth_logger.debug(f"Determined redirect URI: {redirect_uri}")
+    oauth_logger.debug(f"Request headers - Host: {request.headers.get('Host')}, X-Forwarded-Host: {forwarded_host}, X-Forwarded-Proto: {forwarded_proto}")
+    oauth_logger.debug(f"Environment: {os.environ.get('ENVIRONMENT', 'NOT SET')}")
+    
+    return redirect_uri
 
 def decode_token(token):
     """Decode a JWT token and return its payload or None."""
@@ -208,19 +275,67 @@ def log_oauth_debug():
         oauth_logger.debug(f"Session ID: {session.sid if hasattr(session, 'sid') else 'No SID'}")
         oauth_logger.debug(f"Session is new: {session.new if hasattr(session, 'new') else 'Unknown'}")
 
+@app.route('/api/session/debug', methods=['GET'])
+def debug_session():
+    """Debug endpoint to check session status."""
+    session_info = {
+        "session_contents": dict(session),
+        "session_cookie_config": {
+            "domain": app.config.get('SESSION_COOKIE_DOMAIN'),
+            "secure": app.config.get('SESSION_COOKIE_SECURE'),
+            "httponly": app.config.get('SESSION_COOKIE_HTTPONLY'),
+            "samesite": app.config.get('SESSION_COOKIE_SAMESITE'),
+            "lifetime": str(app.config.get('PERMANENT_SESSION_LIFETIME'))
+        },
+        "environment_info": {
+            "is_production": is_production,
+            "is_https": is_https,
+            "frontend_url": os.environ.get('FRONTEND_URL', 'NOT SET'),
+            "environment": os.environ.get('ENVIRONMENT', 'NOT SET')
+        },
+        "request_info": {
+            "host": request.host,
+            "origin": request.headers.get('Origin'),
+            "cookies": list(request.cookies.keys()),
+            "has_session_cookie": 'session' in request.cookies,
+            "session_cookie_name": app.config.get('SESSION_COOKIE_NAME')
+        },
+        "stored_state": {
+            "oauth2_state": session.get('oauth2_state', 'Not found'),
+            "oauth2_state_timestamp": session.get('oauth2_state_timestamp', 'Not found'),
+            "oauth_redirect_uri": session.get('oauth_redirect_uri', 'Not found'),
+            "fallback_states_count": len(oauth_states)
+        }
+    }
+    
+    oauth_logger.debug(f"Session debug info: {json.dumps(session_info, indent=2)}")
+    return jsonify(session_info)
+
 @app.route('/api/auth/login', methods=['GET'])
 def login():
     """Initiate the OAuth2 authorization flow."""
     oauth_logger.debug("=== OAuth Login Started ===")
+    oauth_logger.debug(f"Request headers: {dict(request.headers)}")
+    oauth_logger.debug(f"Request cookies: {dict(request.cookies)}")
+    oauth_logger.debug(f"Session before login: {dict(session)}")
+    oauth_logger.debug(f"Session cookie domain: {app.config.get('SESSION_COOKIE_DOMAIN')}")
+    oauth_logger.debug(f"Session cookie secure: {app.config.get('SESSION_COOKIE_SECURE')}")
+    oauth_logger.debug(f"Session cookie samesite: {app.config.get('SESSION_COOKIE_SAMESITE')}")
     
-    # Create flow instance
+    # Determine the redirect URI dynamically
+    redirect_uri = get_redirect_uri(request)
+    
+    # Store the redirect URI in session for callback validation
+    session['oauth_redirect_uri'] = redirect_uri
+    
+    # Create flow instance with dynamic redirect URI
     flow = Flow.from_client_config(
         CLIENT_CONFIG,
         scopes=SCOPES,
-        redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+        redirect_uri=redirect_uri
     )
     
-    oauth_logger.debug(f"OAuth redirect URI: {CLIENT_CONFIG['web']['redirect_uris'][0]}")
+    oauth_logger.debug(f"OAuth redirect URI: {redirect_uri}")
     
     # Generate URL for request to Google's OAuth 2.0 server
     authorization_url, state = flow.authorization_url(
@@ -232,10 +347,16 @@ def login():
     # Store state in Flask session instead of in-memory set
     session['oauth2_state'] = state
     session['oauth2_state_timestamp'] = datetime.now().isoformat()
+    session.permanent = True  # Make session permanent for better persistence
     session.modified = True
+    
+    # Also store state in a backup location for fallback (optional)
+    oauth_states.add(state)  # Keep in-memory backup for Railway restarts
     
     oauth_logger.debug(f"Generated OAuth state: {state}")
     oauth_logger.debug(f"Stored state in session: {session.get('oauth2_state')}")
+    oauth_logger.debug(f"Session after storing state: {dict(session)}")
+    oauth_logger.debug(f"Session ID (if available): {request.cookies.get('session', 'No session cookie')}")
     oauth_logger.debug(f"Authorization URL: {authorization_url}")
     oauth_logger.debug("=== OAuth Login Completed ===")
 
@@ -249,7 +370,10 @@ def oauth2callback():
         oauth_logger.debug("=== OAuth Callback Started ===")
         oauth_logger.debug(f"Request URL: {request.url}")
         oauth_logger.debug(f"Request args: {dict(request.args)}")
+        oauth_logger.debug(f"Request headers: {dict(request.headers)}")
+        oauth_logger.debug(f"Request cookies: {dict(request.cookies)}")
         oauth_logger.debug(f"Session before state check: {dict(session)}")
+        oauth_logger.debug(f"Session ID (if available): {request.cookies.get('session', 'No session cookie')}")
         
         # Enhanced state validation
         received_state = request.args.get('state')
@@ -263,18 +387,29 @@ def oauth2callback():
             frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
             return redirect(f"{frontend_url}?auth=error&error=missing_state")
         
-        # Validate state for all environments now that we use sessions
+        # Enhanced state validation with fallback mechanism
         if not stored_state:
-            oauth_logger.error("No stored state in session - possible session loss")
-            frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-            return redirect(f"{frontend_url}?auth=error&error=no_stored_state")
-        
-        if not secrets.compare_digest(received_state, stored_state):
-            oauth_logger.error("State mismatch - possible CSRF attack")
-            oauth_logger.error(f"Expected: {stored_state[:20]}...")
-            oauth_logger.error(f"Received: {received_state[:20]}...")
-            frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-            return redirect(f"{frontend_url}?auth=error&error=state_mismatch")
+            oauth_logger.warning("No stored state in session - checking fallback")
+            
+            # Check fallback in-memory storage (for Railway restarts)
+            if received_state in oauth_states:
+                oauth_logger.info("Found state in fallback storage, proceeding with OAuth")
+                oauth_states.discard(received_state)  # Remove from fallback
+            else:
+                oauth_logger.error("No stored state in session or fallback - possible session loss")
+                frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+                return redirect(f"{frontend_url}?auth=error&error=no_stored_state")
+        else:
+            # Primary validation: check against session state
+            if not secrets.compare_digest(received_state, stored_state):
+                oauth_logger.error("State mismatch - possible CSRF attack")
+                oauth_logger.error(f"Expected: {stored_state[:20]}...")
+                oauth_logger.error(f"Received: {received_state[:20]}...")
+                frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+                return redirect(f"{frontend_url}?auth=error&error=state_mismatch")
+            
+            # Remove from fallback storage if it exists
+            oauth_states.discard(received_state)
         
         # Clear state from session
         session.pop('oauth2_state', None)
@@ -301,11 +436,15 @@ def oauth2callback():
         }
         oauth_logger.info(f"CLIENT_CONFIG (redacted): {safe_config}")
         
+        # Get the redirect URI from session or determine it dynamically
+        redirect_uri = session.get('oauth_redirect_uri') or get_redirect_uri(request)
+        oauth_logger.debug(f"Using redirect URI for callback: {redirect_uri}")
+        
         flow = Flow.from_client_config(
             CLIENT_CONFIG,
             scopes=SCOPES,
             state=received_state,
-            redirect_uri=CLIENT_CONFIG['web']['redirect_uris'][0]
+            redirect_uri=redirect_uri
         )
         oauth_logger.info("OAuth flow created successfully")
         
@@ -314,8 +453,13 @@ def oauth2callback():
         oauth_logger.info(f"Authorization response URL: {authorization_response}")
         
         oauth_logger.info("Fetching OAuth tokens")
-        flow.fetch_token(authorization_response=authorization_response)
-        oauth_logger.info("OAuth tokens fetched successfully")
+        try:
+            flow.fetch_token(authorization_response=authorization_response)
+            oauth_logger.info("OAuth tokens fetched successfully")
+        except Warning as w:
+            # Handle scope mismatch warning (Google adds 'openid' automatically)
+            oauth_logger.warning(f"OAuth scope warning (non-fatal): {str(w)}")
+            oauth_logger.info("Continuing with authentication despite scope warning")
         
         credentials = flow.credentials
         oauth_logger.info("Getting user info")
@@ -334,8 +478,7 @@ def oauth2callback():
             user_stats[user_id] = {
                 "total_scanned": 0,
                 "total_unsubscribed": 0,
-                "time_saved": 0,
-                "domains_unsubscribed": {}
+                "time_saved": 0
             }
             oauth_logger.info(f"Initialized stats for user: {user_id}")
         
@@ -372,6 +515,17 @@ def oauth2callback():
         import traceback
         oauth_logger.error(f"Traceback: {traceback.format_exc()}")
         
+        # Add specific handling for common OAuth errors
+        error_message = str(e).lower()
+        if 'redirect_uri_mismatch' in error_message:
+            oauth_logger.error("REDIRECT_URI_MISMATCH ERROR DETECTED!")
+            oauth_logger.error(f"Used redirect URI: {redirect_uri}")
+            oauth_logger.error("Please ensure this URI is added to your Google Cloud Console:")
+            oauth_logger.error("1. Go to https://console.cloud.google.com/")
+            oauth_logger.error("2. Navigate to APIs & Services → Credentials")
+            oauth_logger.error("3. Edit your OAuth 2.0 Client ID")
+            oauth_logger.error(f"4. Add '{redirect_uri}' to Authorized redirect URIs")
+        
         # Add environment variable debugging
         oauth_logger.error(f"Environment check: CLIENT_ID exists: {bool(os.environ.get('GOOGLE_CLIENT_ID'))}")
         oauth_logger.error(f"Environment check: CLIENT_SECRET exists: {bool(os.environ.get('GOOGLE_CLIENT_SECRET'))}")
@@ -400,6 +554,35 @@ def oauth2callback():
 def logout():
     """Client-side logout. No server state is stored."""
     return jsonify({"success": True, "message": "Logged out"})
+
+@app.route('/api/auth/debug', methods=['GET'])
+def auth_debug():
+    """Debug endpoint to show OAuth configuration."""
+    redirect_uri = get_redirect_uri(request)
+    
+    return jsonify({
+        "current_redirect_uri": redirect_uri,
+        "is_production": os.environ.get('ENVIRONMENT') == 'production',
+        "hardcoded_production_uri": 'https://gmailunsubscriber-production.up.railway.app/oauth2callback',
+        "request_host": request.headers.get('Host'),
+        "request_scheme": 'https' if request.is_secure else 'http',
+        "x_forwarded_host": request.headers.get('X-Forwarded-Host'),
+        "x_forwarded_proto": request.headers.get('X-Forwarded-Proto'),
+        "configured_client_id": CLIENT_CONFIG['web']['client_id'][:20] + "..." if CLIENT_CONFIG['web']['client_id'] else None,
+        "environment": os.environ.get('ENVIRONMENT', 'NOT SET'),
+        "frontend_url": os.environ.get('FRONTEND_URL', 'NOT SET'),
+        "proxy_fix_enabled": True,
+        "instructions": {
+            "message": "Add the 'current_redirect_uri' to your Google Cloud Console",
+            "steps": [
+                "1. Go to https://console.cloud.google.com/",
+                "2. Navigate to APIs & Services → Credentials",
+                "3. Edit your OAuth 2.0 Client ID",
+                f"4. Add '{redirect_uri}' to Authorized redirect URIs",
+                "5. Save the changes"
+            ]
+        }
+    })
 
 @app.route('/api/auth/status', methods=['GET'])
 def auth_status():
@@ -439,27 +622,11 @@ def get_stats():
     """Get the user's unsubscription statistics."""
     user_id = g.get('user_id')
     
-    # Ensure user exists in stats
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0,
-            "domains_unsubscribed": {}
-        }
-    
-    # Get user stats and handle set-to-list migration for JSON serialization
-    stats = user_stats[user_id].copy()
-    
-    if "domains_unsubscribed" in stats:
-        for domain, data in stats["domains_unsubscribed"].items():
-            emails = data.get("emails", [])
-            if isinstance(emails, set):
-                # Convert set to list for JSON serialization
-                stats["domains_unsubscribed"][domain]["emails"] = list(emails)
-    
-    logger.info(f"Returning stats for user {user_id}: {stats}")
-    return jsonify(stats)
+    return jsonify(user_stats.get(user_id, {
+        "total_scanned": 0,
+        "total_unsubscribed": 0,
+        "time_saved": 0
+    }))
 
 @app.route('/api/activities', methods=['GET'])
 @auth_required
@@ -467,13 +634,7 @@ def get_activities():
     """Get the user's recent activities."""
     user_id = g.get('user_id')
     
-    # Ensure user exists in activities
-    if user_id not in user_activities:
-        user_activities[user_id] = []
-    
-    activities = user_activities[user_id]
-    logger.info(f"Returning {len(activities)} activities for user {user_id}")
-    return jsonify(activities)
+    return jsonify(user_activities.get(user_id, []))
 
 @app.route('/api/unsubscribed-services', methods=['GET'])
 @auth_required
@@ -481,31 +642,14 @@ def get_unsubscribed_services():
     """Get the list of unsubscribed services/domains."""
     user_id = g.get('user_id')
     
-    # Ensure user stats exist and have domains_unsubscribed field
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0,
-            "domains_unsubscribed": {}
-        }
-    elif "domains_unsubscribed" not in user_stats[user_id]:
-        user_stats[user_id]["domains_unsubscribed"] = {}
-    
     # Get domain statistics
     domains_data = user_stats.get(user_id, {}).get("domains_unsubscribed", {})
     
     # Convert to list format for frontend
     services = []
     for domain, data in domains_data.items():
-        # Handle migration: convert set to list for JSON serialization
-        emails = data.get("emails", [])
-        if isinstance(emails, set):
-            emails_list = list(emails)
-            # Update the stored data to use list format for future calls
-            user_stats[user_id]["domains_unsubscribed"][domain]["emails"] = emails_list
-        else:
-            emails_list = emails
+        # Convert set to list for JSON serialization
+        emails_list = list(data.get("emails", []))
         
         services.append({
             "domain": domain,
@@ -527,23 +671,8 @@ def start_unsubscription():
     user_id = g.get('user_id')
     data = request.json
     
-    # Get parameters with defaults
     search_query = data.get('search_query', '"unsubscribe" OR "email preferences" OR "opt-out" OR "subscription preferences"')
     max_emails = data.get('max_emails', 50)
-    
-    # Ensure user stats and activities exist
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0,
-            "domains_unsubscribed": {}
-        }
-    
-    if user_id not in user_activities:
-        user_activities[user_id] = []
-    
-    logger.info(f"Starting unsubscription process for user {user_id} with query: {search_query}, max_emails: {max_emails}")
     
     # Add activity
     add_activity(user_id, "info", f"Started unsubscription process with query: {search_query}")
@@ -552,27 +681,7 @@ def start_unsubscription():
     # For demo purposes, we'll do it synchronously
     try:
         process_unsubscriptions(user_id, search_query, max_emails, g.credentials)
-        
-        # Return the updated stats along with success message
-        stats = user_stats.get(user_id, {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0,
-            "domains_unsubscribed": {}
-        })
-        
-        # Ensure domains_unsubscribed emails are lists not sets for JSON serialization
-        if "domains_unsubscribed" in stats:
-            for domain, data in stats["domains_unsubscribed"].items():
-                emails = data.get("emails", [])
-                if isinstance(emails, set):
-                    stats["domains_unsubscribed"][domain]["emails"] = list(emails)
-        
-        return jsonify({
-            "success": True, 
-            "message": "Unsubscription process completed",
-            "stats": stats
-        })
+        return jsonify({"success": True, "message": "Unsubscription process completed"})
     except Exception as e:
         logger.error(f"Error in unsubscription process: {e}")
         add_activity(user_id, "error", f"Error in unsubscription process: {str(e)}")
@@ -584,34 +693,11 @@ def get_unsubscription_status():
     """Get the status of the unsubscription process."""
     user_id = g.get('user_id')
     
-    # Ensure user exists in both stats and activities
-    if user_id not in user_stats:
-        user_stats[user_id] = {
-            "total_scanned": 0,
-            "total_unsubscribed": 0,
-            "time_saved": 0,
-            "domains_unsubscribed": {}
-        }
-    
-    if user_id not in user_activities:
-        user_activities[user_id] = []
-    
-    # Get user stats and handle set-to-list migration for JSON serialization
-    stats = user_stats[user_id].copy()
-    if "domains_unsubscribed" in stats:
-        for domain, data in stats["domains_unsubscribed"].items():
-            emails = data.get("emails", [])
-            if isinstance(emails, set):
-                # Convert set to list for JSON serialization
-                stats["domains_unsubscribed"][domain]["emails"] = list(emails)
-    
-    activities = user_activities[user_id]
-    
-    logger.info(f"Returning status for user {user_id}: stats={stats}, activities_count={len(activities)}")
-    
+    # In a real app, this would check the status of the background process
+    # For demo purposes, we'll just return the stats
     return jsonify({
-        "stats": stats,
-        "activities": activities
+        "stats": user_stats.get(user_id, {}),
+        "activities": user_activities.get(user_id, [])
     })
 
 # Claude AI Chat Endpoints
@@ -778,28 +864,76 @@ def chat_conversation_endpoint():
 def get_user_info(credentials):
     """Get the user's email address from their Google account."""
     try:
-        # Use the Google OAuth2 API to get user info
-        from google.auth.transport.requests import Request as AuthRequest
-        import requests as req
+        # Log credentials object for debugging
+        oauth_logger.debug(f"Credentials type: {type(credentials)}")
+        oauth_logger.debug(f"Credentials valid: {credentials.valid}")
+        oauth_logger.debug(f"Credentials expired: {credentials.expired}")
+        oauth_logger.debug(f"Has refresh token: {bool(credentials.refresh_token)}")
         
-        # Get access token from credentials
+        # Refresh credentials if needed
+        from google.auth.transport.requests import Request as AuthRequest
         if not credentials.valid:
             if credentials.expired and credentials.refresh_token:
+                oauth_logger.info("Refreshing expired credentials")
                 credentials.refresh(AuthRequest())
         
-        # Make direct request to Google's userinfo endpoint
-        headers = {'Authorization': f'Bearer {credentials.token}'}
-        response = req.get('https://www.googleapis.com/oauth2/v2/userinfo', headers=headers)
+        # Log token information for debugging
+        oauth_logger.debug(f"Token value: {getattr(credentials, 'token', 'NO TOKEN ATTR')[:20]}..." if hasattr(credentials, 'token') and credentials.token else "NO TOKEN")
+        oauth_logger.debug(f"Token expiry: {getattr(credentials, 'expiry', 'NO EXPIRY')}")
+        oauth_logger.debug(f"Scopes: {getattr(credentials, 'scopes', 'NO SCOPES')}")
         
-        if response.status_code != 200:
-            raise ValueError(f"Failed to get user info: {response.status_code} - {response.text}")
-        
-        user_info = response.json()
-        if 'email' not in user_info:
-            raise ValueError("No email found in user info")
-        
-        logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
-        return user_info
+        # Option 1: Use the OAuth2 API service (recommended approach)
+        try:
+            oauth_logger.info("Attempting to get user info using OAuth2 service")
+            # Create the OAuth2 service with explicit authorization
+            from googleapiclient import discovery
+            import google_auth_httplib2
+            authorized_http = google_auth_httplib2.AuthorizedHttp(credentials)
+            oauth2_service = discovery.build('oauth2', 'v2', http=authorized_http)
+            user_info = oauth2_service.userinfo().get().execute()
+            
+            if 'email' not in user_info:
+                raise ValueError("No email found in user info")
+            
+            logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
+            return user_info
+            
+        except Exception as service_error:
+            oauth_logger.error(f"OAuth2 service approach failed: {service_error}")
+            
+            # Option 2: Fallback to manual request with proper token access
+            oauth_logger.info("Falling back to manual HTTP request")
+            import requests as req
+            
+            # Try different ways to access the token
+            access_token = None
+            if hasattr(credentials, 'token') and credentials.token:
+                access_token = credentials.token
+                oauth_logger.debug("Using credentials.token")
+            elif hasattr(credentials, 'access_token') and credentials.access_token:
+                access_token = credentials.access_token
+                oauth_logger.debug("Using credentials.access_token")
+            elif hasattr(credentials, '_token') and credentials._token:
+                access_token = credentials._token
+                oauth_logger.debug("Using credentials._token")
+            else:
+                # Log available attributes for debugging
+                oauth_logger.error(f"Available credential attributes: {dir(credentials)}")
+                raise ValueError("Could not find access token in credentials object")
+            
+            headers = {'Authorization': f'Bearer {access_token}'}
+            response = req.get('https://www.googleapis.com/oauth2/v2/userinfo', headers=headers)
+            
+            if response.status_code != 200:
+                raise ValueError(f"Failed to get user info: {response.status_code} - {response.text}")
+            
+            user_info = response.json()
+            if 'email' not in user_info:
+                raise ValueError("No email found in user info")
+            
+            logger.info(f"Successfully retrieved user info for: {user_info.get('email')}")
+            return user_info
+            
     except Exception as e:
         logger.error(f"Error getting user info: {str(e)}")
         oauth_logger.error(f"Error type: {type(e).__name__}")
@@ -828,52 +962,66 @@ def add_activity(user_id, activity_type, message, metadata=None):
     if len(user_activities[user_id]) > 50:
         user_activities[user_id] = user_activities[user_id][:50]
     
-    logger.info(f"Added activity for user {user_id}: [{activity_type}] {message}")
     return activity
 
-def ensure_unsubscribed_label(service):
-    """Ensure the UNSUBSCRIBED label exists in Gmail."""
+def ensure_label_exists(service, label_name):
+    """Ensure a Gmail label exists, create it if it doesn't."""
     try:
-        # Try to get existing labels
-        labels_result = service.users().labels().list(userId='me').execute()
-        labels = labels_result.get('labels', [])
+        # List all labels
+        labels = service.users().labels().list(userId='me').execute()
         
-        # Check if UNSUBSCRIBED label already exists
-        for label in labels:
-            if label['name'] == 'UNSUBSCRIBED':
-                logger.info(f"Label 'UNSUBSCRIBED' already exists")
+        # Check if label already exists
+        for label in labels.get('labels', []):
+            if label['name'] == label_name:
+                logger.info(f"Label '{label_name}' already exists")
                 return label['id']
         
         # Create the label if it doesn't exist
+        logger.info(f"Creating label '{label_name}'")
         label_object = {
-            'name': 'UNSUBSCRIBED',
+            'name': label_name,
             'messageListVisibility': 'show',
             'labelListVisibility': 'labelShow'
         }
         
-        created_label = service.users().labels().create(userId='me', body=label_object).execute()
-        logger.info(f"Created UNSUBSCRIBED label with ID: {created_label['id']}")
+        created_label = service.users().labels().create(
+            userId='me',
+            body=label_object
+        ).execute()
+        
+        logger.info(f"Successfully created label '{label_name}' with ID: {created_label['id']}")
         return created_label['id']
         
     except Exception as e:
-        logger.error(f"Error ensuring UNSUBSCRIBED label exists: {e}")
+        logger.error(f"Error ensuring label '{label_name}' exists: {str(e)}")
+        logger.error(f"Error type: {type(e).__name__}")
+        # Return None if we can't create the label, we'll handle this gracefully
         return None
 
 def process_unsubscriptions(user_id, query, max_emails, creds_data):
     """Process unsubscriptions for the user."""
-    # Ensure user stats and activities are initialized
+    
+    # Initialize user stats if not exists
     if user_id not in user_stats:
         user_stats[user_id] = {
             "total_scanned": 0,
             "total_unsubscribed": 0,
             "time_saved": 0,
-            "domains_unsubscribed": {}
+            "domains_unsubscribed": {}  # Track unsubscriptions by domain
         }
-        logger.info(f"Initialized stats for user {user_id} in process_unsubscriptions")
+        logger.info(f"Initialized stats for user: {user_id}")
+    else:
+        logger.info(f"Using existing stats for user: {user_id}")
+        # Ensure domains_unsubscribed exists for older sessions
+        if "domains_unsubscribed" not in user_stats[user_id]:
+            user_stats[user_id]["domains_unsubscribed"] = {}
     
+    # Initialize user activities if not exists
     if user_id not in user_activities:
         user_activities[user_id] = []
-        logger.info(f"Initialized activities for user {user_id} in process_unsubscriptions")
+        logger.info(f"Initialized activities for user: {user_id}")
+    else:
+        logger.info(f"Using existing activities for user: {user_id} (count: {len(user_activities[user_id])})")
     
     creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
     if not creds.valid and creds.refresh_token:
@@ -883,141 +1031,184 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
         except Exception as e:
             logger.error(f"Error refreshing credentials: {e}")
             raise
-    service = build(API_SERVICE_NAME, API_VERSION, credentials=creds, cache_discovery=False)
+    service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
     
-    # Ensure UNSUBSCRIBED label exists
-    unsubscribed_label_id = ensure_unsubscribed_label(service)
+    # Ensure the UNSUBSCRIBED label exists
+    add_activity(user_id, "info", "Setting up Gmail labels...")
+    unsubscribed_label_id = ensure_label_exists(service, 'UNSUBSCRIBED')
     if unsubscribed_label_id:
         logger.info(f"UNSUBSCRIBED label ready with ID: {unsubscribed_label_id}")
+    else:
+        logger.warning("Could not create UNSUBSCRIBED label, will skip labeling emails")
     
     # Search for emails
-    add_activity(user_id, "info", "🔍 Searching for subscription emails...")
+    add_activity(user_id, "info", "Searching for subscription emails...")
     messages = search_emails(service, query, max_emails)
     
     if not messages:
-        add_activity(user_id, "warning", "⚠️ No subscription emails found matching the search criteria")
+        add_activity(user_id, "warning", "No subscription emails found")
         return
     
-    add_activity(user_id, "info", f"📧 Found {len(messages)} subscription emails - starting unsubscription process")
+    add_activity(user_id, "info", f"Found {len(messages)} subscription emails")
     
-    # Track progress counters
-    successful_unsubscriptions = 0
-    failed_unsubscriptions = 0
-    emails_scanned = 0
+    # Process each email with individual error boundaries
+    successful_count = 0
+    failed_count = 0
     
-    # Process each email
     for i, msg in enumerate(messages):
+        msg_id = msg.get('id', 'unknown')
+        
         try:
-            emails_scanned += 1
+            logger.info(f"Processing email {i+1}/{len(messages)}: {msg_id}")
+            logger.debug(f"user_id: {user_id}")
+            logger.debug(f"user_stats keys: {list(user_stats.keys())}")
+            logger.debug(f"user_id in user_stats: {user_id in user_stats}")
             
-            # Update progress every 10 emails or at the end
-            if i == 0:
-                add_activity(user_id, "info", f"🔄 Starting to process {len(messages)} emails...")
-            elif (i + 1) % 10 == 0 or i == len(messages) - 1:
-                progress_percentage = int(((i + 1) / len(messages)) * 100)
-                add_activity(user_id, "info", f"📊 Progress: {i + 1}/{len(messages)} emails processed ({progress_percentage}% complete)")
-            
-            logger.info(f"Processing email {i+1}/{len(messages)}: {msg['id']}")
-            
-            # Get email content and metadata
-            email_data = get_email(service, msg['id'])
-            email_html = email_data.get("content", "")
-            metadata = email_data.get("metadata", {})
-            
-            # Update scanned count immediately
-            user_stats[user_id]["total_scanned"] = emails_scanned
-            
-            # Extract unsubscribe links
-            unsub_links = extract_unsub_links(email_html)
-            
-            if not unsub_links:
-                sender_info = metadata.get("sender_name", "Unknown sender")
-                add_activity(user_id, "warning", f"⚠️ No unsubscribe links found in email from {sender_info}")
-                failed_unsubscriptions += 1
+            # Step 1: Get email content (with error boundary)
+            email_data = {"content": "", "metadata": {}}
+            try:
+                email_data = get_email(service, msg_id)
+                if not email_data.get("content"):
+                    logger.warning(f"No content retrieved for email {msg_id}")
+                    metadata = email_data.get("metadata", {})
+                    sender_info = metadata.get("sender_name", "Unknown sender")
+                    add_activity(user_id, "warning", f"No content found in email {i+1}/{len(messages)} from {sender_info}", metadata)
+                    user_stats[user_id]["total_scanned"] += 1
+                    failed_count += 1
+                    continue
+            except Exception as content_error:
+                logger.error(f"Failed to get content for email {msg_id}: {str(content_error)}")
+                add_activity(user_id, "error", f"Failed to retrieve email {i+1}/{len(messages)}")
+                failed_count += 1
                 continue
             
-            # Try to unsubscribe
-            unsubscribed = False
+            # Step 2: Extract unsubscribe links (with error boundary)
+            unsub_links = []
+            metadata = email_data.get("metadata", {})
+            sender_info = metadata.get("sender_name", "Unknown sender")
+            email_content = email_data.get("content", "")
             
-            for link in unsub_links:
-                if execute_unsub(link):
-                    unsubscribed = True
-                    break
+            try:
+                unsub_links = extract_unsub_links(email_content)
+                if not unsub_links:
+                    logger.debug(f"No unsubscribe links found in email {msg_id}")
+                    add_activity(user_id, "warning", f"No unsubscribe links found in email {i+1}/{len(messages)} from {sender_info}", metadata)
+                    user_stats[user_id]["total_scanned"] += 1
+                    failed_count += 1
+                    continue
+            except Exception as link_error:
+                logger.error(f"Failed to extract links from email {msg_id}: {str(link_error)}")
+                add_activity(user_id, "error", f"Failed to extract links from email {i+1}/{len(messages)} from {sender_info}", metadata)
+                user_stats[user_id]["total_scanned"] += 1
+                failed_count += 1
+                continue
+            
+            # Step 3: Try to unsubscribe (with error boundary)
+            unsubscribed = False
+            try:
+                for link in unsub_links:
+                    if execute_unsub(link):
+                        unsubscribed = True
+                        break
+            except Exception as unsub_error:
+                logger.error(f"Failed to execute unsubscribe for email {msg_id}: {str(unsub_error)}")
+                add_activity(user_id, "error", f"Unsubscribe failed for email {i+1}/{len(messages)} from {sender_info}", metadata)
+                user_stats[user_id]["total_scanned"] += 1
+                failed_count += 1
+                continue
+            
+            # Step 4: Update stats and labels
+            try:
+                user_stats[user_id]["total_scanned"] += 1
+                logger.debug(f"Updated total_scanned for user {user_id}")
+            except Exception as stats_error:
+                logger.error(f"Error updating stats for user {user_id}: {str(stats_error)}")
+                raise
             
             if unsubscribed:
-                successful_unsubscriptions += 1
-                user_stats[user_id]["total_unsubscribed"] = successful_unsubscriptions
-                user_stats[user_id]["time_saved"] = successful_unsubscriptions * 2  # 2 minutes per unsubscription
+                try:
+                    user_stats[user_id]["total_unsubscribed"] += 1
+                    user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
+                    
+                    # Track domain statistics
+                    domain = metadata.get("domain", "unknown")
+                    if domain:
+                        if domain not in user_stats[user_id]["domains_unsubscribed"]:
+                            user_stats[user_id]["domains_unsubscribed"][domain] = {
+                                "count": 0,
+                                "sender_name": metadata.get("sender_name", domain),
+                                "emails": set()
+                            }
+                        user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
+                        if metadata.get("sender_email"):
+                            user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
+                    
+                    logger.debug(f"Updated unsubscribe stats for user {user_id}")
+                except Exception as unsub_stats_error:
+                    logger.error(f"Error updating unsubscribe stats for user {user_id}: {str(unsub_stats_error)}")
+                    raise
                 
-                # Track domain statistics
-                domain = metadata.get("domain", "unknown")
-                if domain and domain != "unknown":
-                    if domain not in user_stats[user_id]["domains_unsubscribed"]:
-                        user_stats[user_id]["domains_unsubscribed"][domain] = {
-                            "count": 0,
-                            "sender_name": metadata.get("sender_name", domain),
-                            "emails": []
-                        }
-                    user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
-                    sender_email = metadata.get("sender_email")
-                    if sender_email and sender_email not in user_stats[user_id]["domains_unsubscribed"][domain]["emails"]:
-                        user_stats[user_id]["domains_unsubscribed"][domain]["emails"].append(sender_email)
-                
-                # Add label to email if we have the label ID
+                # Step 5: Add label to email (with error boundary)
                 if unsubscribed_label_id:
                     try:
                         service.users().messages().modify(
                             userId='me',
-                            id=msg['id'],
+                            id=msg_id,
                             body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
                         ).execute()
-                        logger.info(f"Successfully labeled email {msg['id']} as UNSUBSCRIBED")
+                        logger.info(f"Successfully labeled email {msg_id} as UNSUBSCRIBED")
                     except Exception as label_error:
-                        logger.warning(f"Failed to add UNSUBSCRIBED label to email {msg['id']}: {label_error}")
+                        logger.warning(f"Failed to label email {msg_id}: {str(label_error)}")
+                        # Continue processing even if labeling fails
                 
-                sender_info = metadata.get("sender_name", "Unknown sender")
-                sender_email = metadata.get("sender_email", "")
-                display_name = f"{sender_info}" + (f" ({sender_email})" if sender_email and sender_email != sender_info else "")
-                add_activity(user_id, "success", f"✅ Successfully unsubscribed from {display_name}")
+                add_activity(user_id, "success", f"Successfully unsubscribed from {sender_info} ({metadata.get('sender_email', '')})", metadata)
+                successful_count += 1
             else:
-                failed_unsubscriptions += 1
-                sender_info = metadata.get("sender_name", "Unknown sender")
-                sender_email = metadata.get("sender_email", "")
-                display_name = f"{sender_info}" + (f" ({sender_email})" if sender_email and sender_email != sender_info else "")
-                add_activity(user_id, "error", f"❌ Failed to unsubscribe from {display_name} - no working unsubscribe link found")
+                add_activity(user_id, "error", f"Failed to unsubscribe from {sender_info} ({metadata.get('sender_email', '')})", metadata)
+                failed_count += 1
             
-            # Rate limiting - be respectful to email servers
+            # Rate limiting
             time.sleep(2)
             
         except Exception as e:
-            failed_unsubscriptions += 1
-            logger.error(f"Error processing email {msg['id']}: {e}")
-            add_activity(user_id, "error", f"❌ Error processing email: {str(e)}")
+            # This is a catch-all for any unexpected errors
+            error_msg = f"Unexpected error processing email {msg_id}"
+            error_type = type(e).__name__
+            error_details = str(e)
+            
+            logger.error(f"{error_msg}: {error_type} - {error_details}")
+            
+            # Add additional debug info for KeyError
+            if isinstance(e, KeyError):
+                logger.error(f"KeyError details:")
+                logger.error(f"  - user_id: {user_id}")
+                logger.error(f"  - user_stats keys: {list(user_stats.keys())}")
+                logger.error(f"  - user_id in user_stats: {user_id in user_stats}")
+                logger.error(f"  - Exception args: {e.args}")
+                import traceback
+                logger.error(f"  - Traceback: {traceback.format_exc()}")
+            
+            # Try to get metadata if available
+            metadata_info = email_data.get("metadata", {}) if 'email_data' in locals() else {}
+            sender_desc = metadata_info.get("sender_name", "") if metadata_info else ""
+            if sender_desc:
+                add_activity(user_id, "error", f"Unexpected error for email {i+1}/{len(messages)} from {sender_desc}: {error_type}", metadata_info)
+            else:
+                add_activity(user_id, "error", f"Unexpected error for email {i+1}/{len(messages)}: {error_type}")
+            failed_count += 1
+            
+            # Continue processing other emails
+            continue
     
     # Final summary
-    time_saved = user_stats[user_id]['time_saved']
-    
-    summary_message = f"🎉 Unsubscription process completed! "
-    summary_message += f"Scanned {emails_scanned} emails, "
-    summary_message += f"successfully unsubscribed from {successful_unsubscriptions} services"
-    if failed_unsubscriptions > 0:
-        summary_message += f" ({failed_unsubscriptions} failed)"
-    summary_message += f", saving you {time_saved} minutes of future email management time."
-    
-    add_activity(user_id, "success", summary_message)
-    
-    logger.info(f"Completed unsubscription process for user {user_id}: {successful_unsubscriptions} successful, {failed_unsubscriptions} failed, {emails_scanned} total scanned")
+    total_processed = successful_count + failed_count
+    add_activity(user_id, "success", f"Process completed. Processed {total_processed} emails: {successful_count} successful, {failed_count} failed.")
 
 def search_emails(service, query, max_results=50):
     """Search Gmail for emails matching the query."""
-    try:
-        results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
-        messages = results.get('messages', [])
-        logger.info(f"Found {len(messages)} emails matching query: {query}")
-        return messages
-    except Exception as e:
-        logger.error(f"Error searching emails: {e}")
-        return []
+    results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
+    messages = results.get('messages', [])
+    return messages
 
 def get_email(service, msg_id):
     """Get the HTML content and metadata of an email with enhanced error handling."""
@@ -1191,45 +1382,38 @@ def extract_unsub_links(html):
     try:
         soup = BeautifulSoup(html, 'html.parser')
         links = []
-        pattern = re.compile(r'unsubscribe|opt[-\s]?out|email preferences|manage preferences', re.I)
+        pattern = re.compile(r'unsubscribe|opt[-\s]?out|email preferences', re.I)
         
         for link in soup.find_all('a', href=True):
-            href = link['href']
-            link_text = link.get_text(strip=True)
-            
-            # Check if the link text or href contains unsubscribe-related keywords
-            if pattern.search(link_text) or pattern.search(href):
-                # Make sure it's a valid URL
-                if href.startswith(('http://', 'https://')):
-                    links.append(href)
+            try:
+                link_text = link.text or ""
+                link_href = link.get('href', '')
+                
+                if link_href and (pattern.search(link_text) or pattern.search(link_href)):
+                    links.append(link_href)
+            except Exception as link_error:
+                logger.warning(f"Error processing individual link: {str(link_error)}")
+                continue
         
-        logger.debug(f"Found {len(links)} unsubscribe links in email")
         return links
+        
     except Exception as e:
-        logger.error(f"Error extracting unsubscribe links: {e}")
+        logger.error(f"Error extracting unsubscribe links: {type(e).__name__} - {str(e)}")
         return []
 
 def execute_unsub(link):
     """Execute an unsubscription by visiting the link."""
     try:
-        logger.info(f"Attempting to unsubscribe via: {link}")
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(link, timeout=10, headers=headers, allow_redirects=True)
-        
+        response = requests.get(link, timeout=10)
         if response.status_code == 200:
             logger.info(f'Successful GET unsubscribe: {link}')
             return True
         else:
             logger.warning(f'Non-200 status for unsubscribe: {link}, status: {response.status_code}')
-            return False
-            
     except Exception as e:
         logger.error(f'GET request failed for {link}: {e}')
-        return False
+    
+    return False
 
 # Check if environment variables are set on startup
 if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
