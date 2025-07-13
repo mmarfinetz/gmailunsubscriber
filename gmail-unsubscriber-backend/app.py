@@ -810,13 +810,19 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
         add_activity(user_id, "warning", "No subscription emails found")
         return
     
-    add_activity(user_id, "info", f"Found {len(messages)} subscription emails")
+    add_activity(user_id, "info", f"Found {len(messages)} subscription emails - starting unsubscription process")
     
     # Process each email
     for i, msg in enumerate(messages):
         try:
             # Update progress
             progress_percentage = int((i / len(messages)) * 100)
+            
+            # Log progress milestones
+            if i == 0:
+                add_activity(user_id, "info", f"🔄 Starting to process {len(messages)} emails...")
+            elif (i + 1) % 10 == 0 or i == len(messages) - 1:
+                add_activity(user_id, "info", f"📊 Progress: {i + 1}/{len(messages)} emails processed ({progress_percentage}% complete)")
             
             # Get email content and metadata
             email_data = get_email(service, msg['id'])
@@ -828,7 +834,7 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
             
             if not unsub_links:
                 sender_info = metadata.get("sender_name", "Unknown sender")
-                add_activity(user_id, "warning", f"No unsubscribe links found in email {i+1}/{len(messages)} from {sender_info}", metadata)
+                add_activity(user_id, "warning", f"⚠️ No unsubscribe links found in email from {sender_info}", metadata)
                 user_stats[user_id]["total_scanned"] += 1
                 continue
             
@@ -862,17 +868,22 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                         user_stats[user_id]["domains_unsubscribed"][domain]["emails"].append(sender_email)
                 
                 # Add label to email
-                service.users().messages().modify(
-                    userId='me',
-                    id=msg['id'],
-                    body={'removeLabelIds': ['INBOX'], 'addLabelIds': ['UNSUBSCRIBED']}
-                ).execute()
+                try:
+                    service.users().messages().modify(
+                        userId='me',
+                        id=msg['id'],
+                        body={'removeLabelIds': ['INBOX'], 'addLabelIds': ['UNSUBSCRIBED']}
+                    ).execute()
+                except Exception as label_error:
+                    logger.warning(f"Failed to add UNSUBSCRIBED label to email {msg['id']}: {label_error}")
                 
                 sender_info = metadata.get("sender_name", "Unknown sender")
-                add_activity(user_id, "success", f"Successfully unsubscribed from {sender_info} ({metadata.get('sender_email', '')})", metadata)
+                sender_email = metadata.get("sender_email", "")
+                add_activity(user_id, "success", f"✅ Successfully unsubscribed from {sender_info}" + (f" ({sender_email})" if sender_email else ""), metadata)
             else:
                 sender_info = metadata.get("sender_name", "Unknown sender")
-                add_activity(user_id, "error", f"Failed to unsubscribe from {sender_info} ({metadata.get('sender_email', '')})", metadata)
+                sender_email = metadata.get("sender_email", "")
+                add_activity(user_id, "error", f"❌ Failed to unsubscribe from {sender_info}" + (f" ({sender_email})" if sender_email else " - no working unsubscribe link found"), metadata)
             
             # Rate limiting
             time.sleep(2)
@@ -881,7 +892,11 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
             logger.error(f"Error processing email {msg['id']}: {e}")
             add_activity(user_id, "error", f"Error processing email: {str(e)}")
     
-    add_activity(user_id, "success", f"Completed unsubscription process. Unsubscribed from {user_stats[user_id]['total_unsubscribed']} emails.")
+    total_unsubscribed = user_stats[user_id]['total_unsubscribed']
+    total_scanned = user_stats[user_id]['total_scanned']
+    time_saved = user_stats[user_id]['time_saved']
+    
+    add_activity(user_id, "success", f"🎉 Unsubscription process completed! Scanned {total_scanned} emails, successfully unsubscribed from {total_unsubscribed} services, saving you {time_saved} minutes of future email management time.")
 
 def search_emails(service, query, max_results=50):
     """Search Gmail for emails matching the query."""
