@@ -28,15 +28,6 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-# Import Claude chat functionality
-try:
-    from chat import chat_simple, chat_with_gmail_context, ask_claude
-    CLAUDE_AVAILABLE = True
-    logger.info("Claude chat module loaded successfully")
-except Exception as e:
-    CLAUDE_AVAILABLE = False
-    logger.warning(f"Claude chat module not available: {e}")
-
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +38,15 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Import Claude chat functionality
+try:
+    from chat import chat_simple, chat_with_gmail_context, ask_claude
+    CLAUDE_AVAILABLE = True
+    logger.info("Claude chat module loaded successfully")
+except Exception as e:
+    CLAUDE_AVAILABLE = False
+    logger.warning(f"Claude chat module not available: {e}")
 
 # Create OAuth debug logger
 oauth_logger = logging.getLogger('oauth_debug')
@@ -439,13 +439,17 @@ def get_stats():
     """Get the user's unsubscription statistics."""
     user_id = g.get('user_id')
     
+    # Ensure user exists in stats
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        }
+    
     # Get user stats and handle set-to-list migration for JSON serialization
-    stats = user_stats.get(user_id, {
-        "total_scanned": 0,
-        "total_unsubscribed": 0,
-        "time_saved": 0,
-        "domains_unsubscribed": {}
-    })
+    stats = user_stats[user_id].copy()
     
     if "domains_unsubscribed" in stats:
         for domain, data in stats["domains_unsubscribed"].items():
@@ -454,6 +458,7 @@ def get_stats():
                 # Convert set to list for JSON serialization
                 stats["domains_unsubscribed"][domain]["emails"] = list(emails)
     
+    logger.info(f"Returning stats for user {user_id}: {stats}")
     return jsonify(stats)
 
 @app.route('/api/activities', methods=['GET'])
@@ -462,7 +467,13 @@ def get_activities():
     """Get the user's recent activities."""
     user_id = g.get('user_id')
     
-    return jsonify(user_activities.get(user_id, []))
+    # Ensure user exists in activities
+    if user_id not in user_activities:
+        user_activities[user_id] = []
+    
+    activities = user_activities[user_id]
+    logger.info(f"Returning {len(activities)} activities for user {user_id}")
+    return jsonify(activities)
 
 @app.route('/api/unsubscribed-services', methods=['GET'])
 @auth_required
@@ -516,8 +527,23 @@ def start_unsubscription():
     user_id = g.get('user_id')
     data = request.json
     
+    # Get parameters with defaults
     search_query = data.get('search_query', '"unsubscribe" OR "email preferences" OR "opt-out" OR "subscription preferences"')
     max_emails = data.get('max_emails', 50)
+    
+    # Ensure user stats and activities exist
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        }
+    
+    if user_id not in user_activities:
+        user_activities[user_id] = []
+    
+    logger.info(f"Starting unsubscription process for user {user_id} with query: {search_query}, max_emails: {max_emails}")
     
     # Add activity
     add_activity(user_id, "info", f"Started unsubscription process with query: {search_query}")
@@ -558,8 +584,20 @@ def get_unsubscription_status():
     """Get the status of the unsubscription process."""
     user_id = g.get('user_id')
     
+    # Ensure user exists in both stats and activities
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        }
+    
+    if user_id not in user_activities:
+        user_activities[user_id] = []
+    
     # Get user stats and handle set-to-list migration for JSON serialization
-    stats = user_stats.get(user_id, {})
+    stats = user_stats[user_id].copy()
     if "domains_unsubscribed" in stats:
         for domain, data in stats["domains_unsubscribed"].items():
             emails = data.get("emails", [])
@@ -567,11 +605,13 @@ def get_unsubscription_status():
                 # Convert set to list for JSON serialization
                 stats["domains_unsubscribed"][domain]["emails"] = list(emails)
     
-    # In a real app, this would check the status of the background process
-    # For demo purposes, we'll just return the stats
+    activities = user_activities[user_id]
+    
+    logger.info(f"Returning status for user {user_id}: stats={stats}, activities_count={len(activities)}")
+    
     return jsonify({
         "stats": stats,
-        "activities": user_activities.get(user_id, [])
+        "activities": activities
     })
 
 # Claude AI Chat Endpoints
@@ -788,10 +828,53 @@ def add_activity(user_id, activity_type, message, metadata=None):
     if len(user_activities[user_id]) > 50:
         user_activities[user_id] = user_activities[user_id][:50]
     
+    logger.info(f"Added activity for user {user_id}: [{activity_type}] {message}")
     return activity
+
+def ensure_unsubscribed_label(service):
+    """Ensure the UNSUBSCRIBED label exists in Gmail."""
+    try:
+        # Try to get existing labels
+        labels_result = service.users().labels().list(userId='me').execute()
+        labels = labels_result.get('labels', [])
+        
+        # Check if UNSUBSCRIBED label already exists
+        for label in labels:
+            if label['name'] == 'UNSUBSCRIBED':
+                logger.info(f"Label 'UNSUBSCRIBED' already exists")
+                return label['id']
+        
+        # Create the label if it doesn't exist
+        label_object = {
+            'name': 'UNSUBSCRIBED',
+            'messageListVisibility': 'show',
+            'labelListVisibility': 'labelShow'
+        }
+        
+        created_label = service.users().labels().create(userId='me', body=label_object).execute()
+        logger.info(f"Created UNSUBSCRIBED label with ID: {created_label['id']}")
+        return created_label['id']
+        
+    except Exception as e:
+        logger.error(f"Error ensuring UNSUBSCRIBED label exists: {e}")
+        return None
 
 def process_unsubscriptions(user_id, query, max_emails, creds_data):
     """Process unsubscriptions for the user."""
+    # Ensure user stats and activities are initialized
+    if user_id not in user_stats:
+        user_stats[user_id] = {
+            "total_scanned": 0,
+            "total_unsubscribed": 0,
+            "time_saved": 0,
+            "domains_unsubscribed": {}
+        }
+        logger.info(f"Initialized stats for user {user_id} in process_unsubscriptions")
+    
+    if user_id not in user_activities:
+        user_activities[user_id] = []
+        logger.info(f"Initialized activities for user {user_id} in process_unsubscriptions")
+    
     creds = Credentials.from_authorized_user_info(creds_data, SCOPES)
     if not creds.valid and creds.refresh_token:
         try:
@@ -802,40 +885,55 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
             raise
     service = build(API_SERVICE_NAME, API_VERSION, credentials=creds, cache_discovery=False)
     
+    # Ensure UNSUBSCRIBED label exists
+    unsubscribed_label_id = ensure_unsubscribed_label(service)
+    if unsubscribed_label_id:
+        logger.info(f"UNSUBSCRIBED label ready with ID: {unsubscribed_label_id}")
+    
     # Search for emails
-    add_activity(user_id, "info", "Searching for subscription emails...")
+    add_activity(user_id, "info", "🔍 Searching for subscription emails...")
     messages = search_emails(service, query, max_emails)
     
     if not messages:
-        add_activity(user_id, "warning", "No subscription emails found")
+        add_activity(user_id, "warning", "⚠️ No subscription emails found matching the search criteria")
         return
     
-    add_activity(user_id, "info", f"Found {len(messages)} subscription emails - starting unsubscription process")
+    add_activity(user_id, "info", f"📧 Found {len(messages)} subscription emails - starting unsubscription process")
+    
+    # Track progress counters
+    successful_unsubscriptions = 0
+    failed_unsubscriptions = 0
+    emails_scanned = 0
     
     # Process each email
     for i, msg in enumerate(messages):
         try:
-            # Update progress
-            progress_percentage = int((i / len(messages)) * 100)
+            emails_scanned += 1
             
-            # Log progress milestones
+            # Update progress every 10 emails or at the end
             if i == 0:
                 add_activity(user_id, "info", f"🔄 Starting to process {len(messages)} emails...")
             elif (i + 1) % 10 == 0 or i == len(messages) - 1:
+                progress_percentage = int(((i + 1) / len(messages)) * 100)
                 add_activity(user_id, "info", f"📊 Progress: {i + 1}/{len(messages)} emails processed ({progress_percentage}% complete)")
+            
+            logger.info(f"Processing email {i+1}/{len(messages)}: {msg['id']}")
             
             # Get email content and metadata
             email_data = get_email(service, msg['id'])
             email_html = email_data.get("content", "")
             metadata = email_data.get("metadata", {})
             
+            # Update scanned count immediately
+            user_stats[user_id]["total_scanned"] = emails_scanned
+            
             # Extract unsubscribe links
             unsub_links = extract_unsub_links(email_html)
             
             if not unsub_links:
                 sender_info = metadata.get("sender_name", "Unknown sender")
-                add_activity(user_id, "warning", f"⚠️ No unsubscribe links found in email from {sender_info}", metadata)
-                user_stats[user_id]["total_scanned"] += 1
+                add_activity(user_id, "warning", f"⚠️ No unsubscribe links found in email from {sender_info}")
+                failed_unsubscriptions += 1
                 continue
             
             # Try to unsubscribe
@@ -846,16 +944,14 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                     unsubscribed = True
                     break
             
-            # Update stats and labels
-            user_stats[user_id]["total_scanned"] += 1
-            
             if unsubscribed:
-                user_stats[user_id]["total_unsubscribed"] += 1
-                user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
+                successful_unsubscriptions += 1
+                user_stats[user_id]["total_unsubscribed"] = successful_unsubscriptions
+                user_stats[user_id]["time_saved"] = successful_unsubscriptions * 2  # 2 minutes per unsubscription
                 
                 # Track domain statistics
                 domain = metadata.get("domain", "unknown")
-                if domain:
+                if domain and domain != "unknown":
                     if domain not in user_stats[user_id]["domains_unsubscribed"]:
                         user_stats[user_id]["domains_unsubscribed"][domain] = {
                             "count": 0,
@@ -867,42 +963,61 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                     if sender_email and sender_email not in user_stats[user_id]["domains_unsubscribed"][domain]["emails"]:
                         user_stats[user_id]["domains_unsubscribed"][domain]["emails"].append(sender_email)
                 
-                # Add label to email
-                try:
-                    service.users().messages().modify(
-                        userId='me',
-                        id=msg['id'],
-                        body={'removeLabelIds': ['INBOX'], 'addLabelIds': ['UNSUBSCRIBED']}
-                    ).execute()
-                except Exception as label_error:
-                    logger.warning(f"Failed to add UNSUBSCRIBED label to email {msg['id']}: {label_error}")
+                # Add label to email if we have the label ID
+                if unsubscribed_label_id:
+                    try:
+                        service.users().messages().modify(
+                            userId='me',
+                            id=msg['id'],
+                            body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
+                        ).execute()
+                        logger.info(f"Successfully labeled email {msg['id']} as UNSUBSCRIBED")
+                    except Exception as label_error:
+                        logger.warning(f"Failed to add UNSUBSCRIBED label to email {msg['id']}: {label_error}")
                 
                 sender_info = metadata.get("sender_name", "Unknown sender")
                 sender_email = metadata.get("sender_email", "")
-                add_activity(user_id, "success", f"✅ Successfully unsubscribed from {sender_info}" + (f" ({sender_email})" if sender_email else ""), metadata)
+                display_name = f"{sender_info}" + (f" ({sender_email})" if sender_email and sender_email != sender_info else "")
+                add_activity(user_id, "success", f"✅ Successfully unsubscribed from {display_name}")
             else:
+                failed_unsubscriptions += 1
                 sender_info = metadata.get("sender_name", "Unknown sender")
                 sender_email = metadata.get("sender_email", "")
-                add_activity(user_id, "error", f"❌ Failed to unsubscribe from {sender_info}" + (f" ({sender_email})" if sender_email else " - no working unsubscribe link found"), metadata)
+                display_name = f"{sender_info}" + (f" ({sender_email})" if sender_email and sender_email != sender_info else "")
+                add_activity(user_id, "error", f"❌ Failed to unsubscribe from {display_name} - no working unsubscribe link found")
             
-            # Rate limiting
+            # Rate limiting - be respectful to email servers
             time.sleep(2)
             
         except Exception as e:
+            failed_unsubscriptions += 1
             logger.error(f"Error processing email {msg['id']}: {e}")
-            add_activity(user_id, "error", f"Error processing email: {str(e)}")
+            add_activity(user_id, "error", f"❌ Error processing email: {str(e)}")
     
-    total_unsubscribed = user_stats[user_id]['total_unsubscribed']
-    total_scanned = user_stats[user_id]['total_scanned']
+    # Final summary
     time_saved = user_stats[user_id]['time_saved']
     
-    add_activity(user_id, "success", f"🎉 Unsubscription process completed! Scanned {total_scanned} emails, successfully unsubscribed from {total_unsubscribed} services, saving you {time_saved} minutes of future email management time.")
+    summary_message = f"🎉 Unsubscription process completed! "
+    summary_message += f"Scanned {emails_scanned} emails, "
+    summary_message += f"successfully unsubscribed from {successful_unsubscriptions} services"
+    if failed_unsubscriptions > 0:
+        summary_message += f" ({failed_unsubscriptions} failed)"
+    summary_message += f", saving you {time_saved} minutes of future email management time."
+    
+    add_activity(user_id, "success", summary_message)
+    
+    logger.info(f"Completed unsubscription process for user {user_id}: {successful_unsubscriptions} successful, {failed_unsubscriptions} failed, {emails_scanned} total scanned")
 
 def search_emails(service, query, max_results=50):
     """Search Gmail for emails matching the query."""
-    results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
-    messages = results.get('messages', [])
-    return messages
+    try:
+        results = service.users().messages().list(userId='me', q=query, maxResults=max_results).execute()
+        messages = results.get('messages', [])
+        logger.info(f"Found {len(messages)} emails matching query: {query}")
+        return messages
+    except Exception as e:
+        logger.error(f"Error searching emails: {e}")
+        return []
 
 def get_email(service, msg_id):
     """Get the HTML content and metadata of an email with enhanced error handling."""
@@ -1073,29 +1188,48 @@ def extract_unsub_links(html):
     if not html:
         return []
     
-    soup = BeautifulSoup(html, 'html.parser')
-    links = []
-    pattern = re.compile(r'unsubscribe|opt[-\s]?out|email preferences', re.I)
-    
-    for link in soup.find_all('a', href=True):
-        if pattern.search(link.text) or pattern.search(link['href']):
-            links.append(link['href'])
-    
-    return links
+    try:
+        soup = BeautifulSoup(html, 'html.parser')
+        links = []
+        pattern = re.compile(r'unsubscribe|opt[-\s]?out|email preferences|manage preferences', re.I)
+        
+        for link in soup.find_all('a', href=True):
+            href = link['href']
+            link_text = link.get_text(strip=True)
+            
+            # Check if the link text or href contains unsubscribe-related keywords
+            if pattern.search(link_text) or pattern.search(href):
+                # Make sure it's a valid URL
+                if href.startswith(('http://', 'https://')):
+                    links.append(href)
+        
+        logger.debug(f"Found {len(links)} unsubscribe links in email")
+        return links
+    except Exception as e:
+        logger.error(f"Error extracting unsubscribe links: {e}")
+        return []
 
 def execute_unsub(link):
     """Execute an unsubscription by visiting the link."""
     try:
-        response = requests.get(link, timeout=10)
+        logger.info(f"Attempting to unsubscribe via: {link}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(link, timeout=10, headers=headers, allow_redirects=True)
+        
         if response.status_code == 200:
             logger.info(f'Successful GET unsubscribe: {link}')
             return True
         else:
             logger.warning(f'Non-200 status for unsubscribe: {link}, status: {response.status_code}')
+            return False
+            
     except Exception as e:
         logger.error(f'GET request failed for {link}: {e}')
-    
-    return False
+        return False
 
 # Check if environment variables are set on startup
 if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
