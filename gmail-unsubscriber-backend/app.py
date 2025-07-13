@@ -29,6 +29,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Import database functionality
+from database import initialize_database, get_db_manager
+
 # Set insecure transport for OAuth in development only
 # WARNING: This should NEVER be enabled in production!
 if os.environ.get('ENVIRONMENT') == 'development' or (
@@ -146,6 +149,28 @@ API_VERSION = 'v1'
 user_stats = {}
 user_activities = {}
 oauth_states = set()
+
+# Initialize database and load existing data
+try:
+    db_success = initialize_database()
+    if db_success:
+        db_manager = get_db_manager()
+        if db_manager:
+            # Load existing data from database
+            loaded_stats = db_manager.load_user_stats()
+            loaded_activities = db_manager.load_user_activities()
+            
+            # Merge with in-memory data (database takes precedence)
+            user_stats.update(loaded_stats)
+            user_activities.update(loaded_activities)
+            
+            logger.info(f"Loaded data for {len(loaded_stats)} users with stats and {len(loaded_activities)} users with activities")
+        else:
+            logger.warning("Database manager not available after initialization")
+    else:
+        logger.error("Database initialization failed - running in memory-only mode")
+except Exception as e:
+    logger.error(f"Database setup failed: {e} - running in memory-only mode")
 
 # Authentication configuration
 CLIENT_CONFIG = {
@@ -478,17 +503,21 @@ def oauth2callback():
             user_stats[user_id] = {
                 "total_scanned": 0,
                 "total_unsubscribed": 0,
-                "time_saved": 0
+                "time_saved": 0,
+                "domains_unsubscribed": {}
             }
             oauth_logger.info(f"Initialized stats for user: {user_id}")
+            save_stats_to_db(user_id)
         
         if user_id not in user_activities:
-            user_activities[user_id] = [{
+            activity = {
                 "type": "info",
                 "message": "Successfully connected Gmail account",
                 "time": datetime.now().isoformat()
-            }]
+            }
+            user_activities[user_id] = [activity]
             oauth_logger.info(f"Initialized activities for user: {user_id}")
+            save_activity_to_db(user_id, activity)
         
         # Create JWT token containing the credentials
         oauth_logger.info("Creating JWT token")
@@ -699,6 +728,32 @@ def get_unsubscription_status():
         "stats": user_stats.get(user_id, {}),
         "activities": user_activities.get(user_id, [])
     })
+
+@app.route('/api/database/stats', methods=['GET'])
+def get_database_stats():
+    """Get database statistics for monitoring."""
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            db_stats = db_manager.get_database_stats()
+            return jsonify({
+                "database_available": True,
+                "stats": db_stats,
+                "timestamp": datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                "database_available": False,
+                "message": "Database manager not available",
+                "timestamp": datetime.now().isoformat()
+            })
+    except Exception as e:
+        logger.error(f"Error getting database stats: {e}")
+        return jsonify({
+            "database_available": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }), 500
 
 # Claude AI Chat Endpoints
 @app.route('/api/chat/status', methods=['GET'])
@@ -962,7 +1017,53 @@ def add_activity(user_id, activity_type, message, metadata=None):
     if len(user_activities[user_id]) > 50:
         user_activities[user_id] = user_activities[user_id][:50]
     
+    # Save to database
+    save_activity_to_db(user_id, activity)
+    
     return activity
+
+def save_stats_to_db(user_id):
+    """Save user statistics to database."""
+    try:
+        db_manager = get_db_manager()
+        if db_manager and user_id in user_stats:
+            success = db_manager.save_single_user_stats(user_id, user_stats[user_id])
+            if not success:
+                logger.warning(f"Failed to save stats to database for user: {user_id}")
+        else:
+            logger.debug("Database manager not available or user not found for stats save")
+    except Exception as e:
+        logger.error(f"Error saving stats to database for user {user_id}: {e}")
+
+def save_activity_to_db(user_id, activity):
+    """Save a single activity to database."""
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            success = db_manager.save_single_user_activity(user_id, activity)
+            if not success:
+                logger.warning(f"Failed to save activity to database for user: {user_id}")
+        else:
+            logger.debug("Database manager not available for activity save")
+    except Exception as e:
+        logger.error(f"Error saving activity to database for user {user_id}: {e}")
+
+def save_all_data_to_db():
+    """Save all user data to database. Used for bulk operations."""
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            stats_success = db_manager.save_user_stats(user_stats)
+            activities_success = db_manager.save_user_activities(user_activities)
+            
+            if stats_success and activities_success:
+                logger.info("Successfully saved all data to database")
+            else:
+                logger.warning("Partial failure saving data to database")
+        else:
+            logger.debug("Database manager not available for bulk save")
+    except Exception as e:
+        logger.error(f"Error saving all data to database: {e}")
 
 def ensure_label_exists(service, label_name):
     """Ensure a Gmail label exists, create it if it doesn't."""
@@ -1074,6 +1175,7 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                     sender_info = metadata.get("sender_name", "Unknown sender")
                     add_activity(user_id, "warning", f"No content found in email {i+1}/{len(messages)} from {sender_info}", metadata)
                     user_stats[user_id]["total_scanned"] += 1
+                    save_stats_to_db(user_id)
                     failed_count += 1
                     continue
             except Exception as content_error:
@@ -1094,12 +1196,14 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                     logger.debug(f"No unsubscribe links found in email {msg_id}")
                     add_activity(user_id, "warning", f"No unsubscribe links found in email {i+1}/{len(messages)} from {sender_info}", metadata)
                     user_stats[user_id]["total_scanned"] += 1
+                    save_stats_to_db(user_id)
                     failed_count += 1
                     continue
             except Exception as link_error:
                 logger.error(f"Failed to extract links from email {msg_id}: {str(link_error)}")
                 add_activity(user_id, "error", f"Failed to extract links from email {i+1}/{len(messages)} from {sender_info}", metadata)
                 user_stats[user_id]["total_scanned"] += 1
+                save_stats_to_db(user_id)
                 failed_count += 1
                 continue
             
@@ -1114,12 +1218,14 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                 logger.error(f"Failed to execute unsubscribe for email {msg_id}: {str(unsub_error)}")
                 add_activity(user_id, "error", f"Unsubscribe failed for email {i+1}/{len(messages)} from {sender_info}", metadata)
                 user_stats[user_id]["total_scanned"] += 1
+                save_stats_to_db(user_id)
                 failed_count += 1
                 continue
             
             # Step 4: Update stats and labels
             try:
                 user_stats[user_id]["total_scanned"] += 1
+                save_stats_to_db(user_id)
                 logger.debug(f"Updated total_scanned for user {user_id}")
             except Exception as stats_error:
                 logger.error(f"Error updating stats for user {user_id}: {str(stats_error)}")
@@ -1144,6 +1250,10 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                             user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
                     
                     logger.debug(f"Updated unsubscribe stats for user {user_id}")
+                    
+                    # Save updated stats to database
+                    save_stats_to_db(user_id)
+                    
                 except Exception as unsub_stats_error:
                     logger.error(f"Error updating unsubscribe stats for user {user_id}: {str(unsub_stats_error)}")
                     raise
@@ -1420,6 +1530,29 @@ if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_S
     logger.warning("Google OAuth credentials not set. Please set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables.")
 
 if __name__ == '__main__':
+    import signal
+    import atexit
+    
+    def cleanup():
+        """Save all data to database on shutdown."""
+        try:
+            logger.info("Saving all data to database on shutdown...")
+            save_all_data_to_db()
+            logger.info("Data saved successfully on shutdown")
+        except Exception as e:
+            logger.error(f"Error saving data on shutdown: {e}")
+    
+    def signal_handler(signum, _):
+        """Handle shutdown signals."""
+        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        cleanup()
+        exit(0)
+    
+    # Register cleanup handlers
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    
     # Run the Flask app
     debug_mode = os.environ.get('ENVIRONMENT') == 'development'
     app.run(host='0.0.0.0', port=5000, debug=debug_mode)
