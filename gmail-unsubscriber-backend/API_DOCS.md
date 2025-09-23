@@ -84,6 +84,25 @@ Gets the user's unsubscription statistics.
 }
 ```
 
+### GET /api/unsubscribed-services
+
+Gets the list of unsubscribed services/domains.
+
+**Authentication Required:** Yes
+
+**Response:**
+```json
+[
+  {
+    "domain": "example.com",
+    "sender_name": "Example Newsletter",
+    "emails": ["newsletter@example.com"],
+    "count": 5,
+    "last_unsubscribed": "2025-04-08T12:34:56.789Z"
+  }
+]
+```
+
 ### GET /api/activities
 
 Gets the user's recent activities.
@@ -152,6 +171,125 @@ Gets the status of the unsubscription process.
     }
   ],
   "status": "in_progress"
+}
+```
+
+### POST /api/unsubscribe/preview
+
+Preview emails for unsubscription without making changes. This endpoint scans emails and detects RFC 8058 one-click unsubscribe support.
+
+**Authentication Required:** Yes
+
+**Request Body:**
+```json
+{
+  "search_query": "\"unsubscribe\" OR \"opt-out\"",
+  "max_emails": 50
+}
+```
+
+**Response:**
+```json
+{
+  "candidates": [
+    {
+      "id": "msg123",
+      "subject": "Weekly Newsletter",
+      "sender_name": "Example News",
+      "sender_email": "news@example.com",
+      "domain": "example.com",
+      "has_rfc8058_one_click": true,
+      "rfc8058_unsub_url": "https://example.com/unsub/123",
+      "recommended_action": "one_click_unsub"
+    },
+    {
+      "id": "msg124",
+      "subject": "Marketing Email",
+      "sender_name": "Store",
+      "sender_email": "store@shop.com",
+      "domain": "shop.com",
+      "has_rfc8058_one_click": false,
+      "rfc8058_unsub_url": "",
+      "recommended_action": "label_archive"
+    }
+  ],
+  "message": "Found 2 email candidates"
+}
+```
+
+### POST /api/unsubscribe/apply
+
+Apply unsubscribe actions to selected emails. Supports RFC 8058 one-click unsubscribe and label+archive fallback.
+
+**Authentication Required:** Yes
+
+**Request Body:**
+```json
+{
+  "items": [
+    {
+      "id": "msg123",
+      "action": "one_click_unsub"
+    },
+    {
+      "id": "msg124",
+      "action": "label_archive"
+    }
+  ],
+  "create_auto_archive_filter": true
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "operation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "summary": {
+    "processed": 2,
+    "successful": 2,
+    "failed": 0,
+    "filters_created": 2
+  }
+}
+```
+
+### POST /api/unsubscribe/undo
+
+Undo a previous unsubscribe operation. Reverts label changes and deletes created filters. Note: RFC 8058 one-click unsubscribes cannot be undone.
+
+**Authentication Required:** Yes
+
+**Request Body:**
+```json
+{
+  "operation_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "summary": {
+    "reverted": 1,
+    "filters_deleted": 2
+  },
+  "warning": "1 one-click unsubscribes cannot be undone"
+}
+```
+
+### DELETE /api/user/data
+
+Delete all app-stored data for the authenticated user. This includes statistics, activities, operations history, and domain data. Note: This does NOT delete any Gmail content, only data stored by the application.
+
+**Authentication Required:** Yes
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "All user data has been deleted"
 }
 ```
 

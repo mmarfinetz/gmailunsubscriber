@@ -1146,3 +1146,124 @@ header {
 .info-content a:hover {
     text-decoration: underline;
 }
+
+/* Modal variations */
+.modal-large {
+    max-width: 900px;
+    width: 90%;
+}
+
+/* Preview table styles */
+.preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.preview-table th,
+.preview-table td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+.preview-table th {
+    background-color: #f5f5f5;
+    font-weight: 600;
+}
+
+.preview-table tbody tr:hover {
+    background-color: #f9f9f9;
+}
+
+.preview-options {
+    margin: 15px 0;
+    padding: 10px;
+    background-color: #f5f5f5;
+    border-radius: 5px;
+}
+
+.preview-options label {
+    margin-right: 20px;
+    cursor: pointer;
+}
+
+.preview-table-container {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #e0e0e0;
+    border-radius: 5px;
+}
+
+/* Action type badges */
+.action-rfc8058 {
+    color: #28a745;
+    font-weight: 500;
+    font-size: 12px;
+}
+
+.action-archive {
+    color: #6c757d;
+    font-weight: 500;
+    font-size: 12px;
+}
+
+/* Toast notification styles */
+.toast {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: #333;
+    color: white;
+    padding: 15px 20px;
+    border-radius: 5px;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    z-index: 10000;
+    animation: slideIn 0.3s ease-out;
+}
+
+.toast-content {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.toast .btn-small {
+    padding: 5px 10px;
+    font-size: 12px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+}
+
+.toast .btn-small:hover {
+    background-color: #0056b3;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateY(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Primary button style */
+.btn-primary {
+    background-color: #007bff;
+    color: white;
+}
+
+.btn-primary:hover {
+    background-color: #0056b3;
+}
+
+.btn-primary:disabled {
+    background-color: #6c757d;
+    cursor: not-allowed;
+}

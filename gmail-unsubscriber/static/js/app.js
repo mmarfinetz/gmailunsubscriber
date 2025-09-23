@@ -131,27 +131,64 @@ function checkAuthStatus() {
 function setupEventListeners() {
     // Auth button click
     authBtn.addEventListener('click', handleAuth);
-    
+
     // Logout button click
     logoutBtn.addEventListener('click', handleLogout);
-    
+
     // Action button click (to open run modal)
     actionButton.addEventListener('click', () => {
         runModal.classList.add('active');
     });
-    
+
     // Modal close button
     modalClose.addEventListener('click', () => {
         runModal.classList.remove('active');
     });
-    
+
     // Cancel run button
     cancelRunBtn.addEventListener('click', () => {
         runModal.classList.remove('active');
     });
-    
-    // Start run button
+
+    // Start run button (legacy)
     startRunBtn.addEventListener('click', startUnsubscriptionProcess);
+
+    // Preview button (new flow)
+    const previewBtn = document.getElementById('preview-run');
+    if (previewBtn) {
+        previewBtn.addEventListener('click', startPreviewFlow);
+    }
+
+    // Preview modal controls
+    const previewModal = document.getElementById('preview-modal');
+    const previewClose = document.getElementById('preview-close');
+    const cancelPreview = document.getElementById('cancel-preview');
+    const selectAllCheckbox = document.getElementById('select-all-candidates');
+    const applyActionsBtn = document.getElementById('apply-actions');
+
+    if (previewClose) {
+        previewClose.addEventListener('click', () => {
+            previewModal.classList.remove('active');
+        });
+    }
+
+    if (cancelPreview) {
+        cancelPreview.addEventListener('click', () => {
+            previewModal.classList.remove('active');
+        });
+    }
+
+    if (selectAllCheckbox) {
+        selectAllCheckbox.addEventListener('change', (e) => {
+            const checkboxes = document.querySelectorAll('.candidate-checkbox');
+            checkboxes.forEach(cb => cb.checked = e.target.checked);
+            updateApplyButton();
+        });
+    }
+
+    if (applyActionsBtn) {
+        applyActionsBtn.addEventListener('click', applySelectedActions);
+    }
 }
 
 
@@ -861,6 +898,267 @@ function debugAuthState() {
     .catch(error => {
         console.error('Auth status error:', error);
     });
+}
+
+// Preview flow functions
+let currentCandidates = [];
+let lastOperationId = null;
+
+function startPreviewFlow() {
+    // Get values from form
+    const searchQuery = document.getElementById('search-query').value;
+    const maxEmails = parseInt(document.getElementById('max-emails').value, 10);
+
+    // Validate
+    if (!searchQuery || isNaN(maxEmails) || maxEmails < 1) {
+        alert('Please enter valid values for all fields.');
+        return;
+    }
+
+    // Close run modal and open preview modal
+    runModal.classList.remove('active');
+    const previewModal = document.getElementById('preview-modal');
+    previewModal.classList.add('active');
+
+    // Show loading state
+    document.getElementById('preview-loading').style.display = 'block';
+    document.getElementById('preview-content').style.display = 'none';
+
+    // Call preview API
+    previewUnsubscribeCandidates(searchQuery, maxEmails);
+}
+
+function previewUnsubscribeCandidates(searchQuery, maxEmails) {
+    const token = localStorage.getItem('auth_token');
+
+    fetch(`${API_BASE_URL}/api/unsubscribe/preview`, {
+        method: 'POST',
+        headers: Object.assign({
+            'Content-Type': 'application/json'
+        }, token ? { 'Authorization': `Bearer ${token}` } : {}),
+        credentials: 'include',
+        body: JSON.stringify({
+            search_query: searchQuery,
+            max_emails: maxEmails
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.candidates) {
+            currentCandidates = data.candidates;
+            displayCandidates(data.candidates);
+        } else {
+            throw new Error(data.error || 'Failed to preview candidates');
+        }
+    })
+    .catch(error => {
+        console.error('Error previewing candidates:', error);
+        alert(`Failed to preview candidates: ${error.message}`);
+        document.getElementById('preview-modal').classList.remove('active');
+    });
+}
+
+function displayCandidates(candidates) {
+    // Hide loading, show content
+    document.getElementById('preview-loading').style.display = 'none';
+    document.getElementById('preview-content').style.display = 'block';
+
+    // Update summary
+    const summary = document.getElementById('preview-summary');
+    const rfcCount = candidates.filter(c => c.has_rfc8058_one_click).length;
+    const archiveCount = candidates.length - rfcCount;
+    summary.textContent = `Found ${candidates.length} candidates: ${rfcCount} can be unsubscribed via RFC 8058, ${archiveCount} will be labeled and archived.`;
+
+    // Populate table
+    const tableBody = document.getElementById('preview-table-body');
+    tableBody.innerHTML = '';
+
+    candidates.forEach((candidate, index) => {
+        const row = document.createElement('tr');
+
+        const actionText = candidate.has_rfc8058_one_click ?
+            'RFC 8058 One-Click Unsubscribe' :
+            'Label + Archive';
+
+        const actionClass = candidate.has_rfc8058_one_click ?
+            'action-rfc8058' :
+            'action-archive';
+
+        row.innerHTML = `
+            <td><input type="checkbox" class="candidate-checkbox" data-index="${index}" checked></td>
+            <td>${candidate.sender_name || candidate.sender_email}</td>
+            <td title="${candidate.subject}">${truncateText(candidate.subject, 50)}</td>
+            <td><span class="${actionClass}">${actionText}</span></td>
+        `;
+
+        tableBody.appendChild(row);
+    });
+
+    // Add event listeners for checkboxes
+    document.querySelectorAll('.candidate-checkbox').forEach(cb => {
+        cb.addEventListener('change', updateApplyButton);
+    });
+
+    // Enable apply button
+    updateApplyButton();
+}
+
+function updateApplyButton() {
+    const checkedBoxes = document.querySelectorAll('.candidate-checkbox:checked');
+    const applyBtn = document.getElementById('apply-actions');
+    applyBtn.disabled = checkedBoxes.length === 0;
+    applyBtn.textContent = `Apply Actions (${checkedBoxes.length})`;
+}
+
+function applySelectedActions() {
+    const checkedBoxes = document.querySelectorAll('.candidate-checkbox:checked');
+    const createFilters = document.getElementById('create-filters').checked;
+
+    if (checkedBoxes.length === 0) {
+        alert('Please select at least one candidate.');
+        return;
+    }
+
+    // Build items array
+    const items = [];
+    checkedBoxes.forEach(cb => {
+        const index = parseInt(cb.dataset.index);
+        const candidate = currentCandidates[index];
+        items.push({
+            id: candidate.id,
+            action: candidate.recommended_action
+        });
+    });
+
+    // Disable apply button and show processing
+    const applyBtn = document.getElementById('apply-actions');
+    applyBtn.disabled = true;
+    applyBtn.textContent = 'Applying...';
+
+    // Call apply API
+    const token = localStorage.getItem('auth_token');
+
+    fetch(`${API_BASE_URL}/api/unsubscribe/apply`, {
+        method: 'POST',
+        headers: Object.assign({
+            'Content-Type': 'application/json'
+        }, token ? { 'Authorization': `Bearer ${token}` } : {}),
+        credentials: 'include',
+        body: JSON.stringify({
+            items: items,
+            create_auto_archive_filter: createFilters
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            lastOperationId = data.operation_id;
+
+            // Close preview modal
+            document.getElementById('preview-modal').classList.remove('active');
+
+            // Show undo toast
+            showUndoToast(data.summary);
+
+            // Reload user data
+            loadUserData();
+        } else {
+            throw new Error(data.error || 'Failed to apply actions');
+        }
+    })
+    .catch(error => {
+        console.error('Error applying actions:', error);
+        alert(`Failed to apply actions: ${error.message}`);
+    })
+    .finally(() => {
+        // Reset button
+        applyBtn.disabled = false;
+        applyBtn.textContent = 'Apply Actions';
+    });
+}
+
+function showUndoToast(summary) {
+    const toast = document.getElementById('undo-toast');
+    const message = document.getElementById('toast-message');
+
+    let text = `Applied ${summary.successful} actions successfully`;
+    if (summary.failed > 0) {
+        text += `, ${summary.failed} failed`;
+    }
+    if (summary.filters_created > 0) {
+        text += `, created ${summary.filters_created} filters`;
+    }
+
+    message.textContent = text;
+    toast.style.display = 'block';
+
+    // Add undo button listener
+    const undoBtn = document.getElementById('undo-button');
+    undoBtn.onclick = () => undoLastOperation();
+
+    // Auto-hide after 10 seconds
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, 10000);
+}
+
+function undoLastOperation() {
+    if (!lastOperationId) {
+        alert('No operation to undo');
+        return;
+    }
+
+    const undoBtn = document.getElementById('undo-button');
+    undoBtn.disabled = true;
+    undoBtn.textContent = 'Undoing...';
+
+    const token = localStorage.getItem('auth_token');
+
+    fetch(`${API_BASE_URL}/api/unsubscribe/undo`, {
+        method: 'POST',
+        headers: Object.assign({
+            'Content-Type': 'application/json'
+        }, token ? { 'Authorization': `Bearer ${token}` } : {}),
+        credentials: 'include',
+        body: JSON.stringify({
+            operation_id: lastOperationId
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            let message = `Undo complete: ${data.summary.reverted} emails restored`;
+            if (data.summary.filters_deleted > 0) {
+                message += `, ${data.summary.filters_deleted} filters deleted`;
+            }
+            if (data.warning) {
+                message += `\n⚠️ ${data.warning}`;
+            }
+            alert(message);
+
+            // Hide toast
+            document.getElementById('undo-toast').style.display = 'none';
+
+            // Reload user data
+            loadUserData();
+        } else {
+            throw new Error(data.error || 'Failed to undo');
+        }
+    })
+    .catch(error => {
+        console.error('Error undoing operation:', error);
+        alert(`Failed to undo: ${error.message}`);
+    })
+    .finally(() => {
+        undoBtn.disabled = false;
+        undoBtn.textContent = 'Undo';
+    });
+}
+
+function truncateText(text, maxLength) {
+    if (!text) return '';
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
 }
 
 // Initialize the app when the DOM is loaded

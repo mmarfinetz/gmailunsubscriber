@@ -27,7 +27,7 @@ ENV PYTHONPATH=/app/gmail-unsubscriber-backend
 ENV PYTHONUNBUFFERED=1
 
 # Expose port
-EXPOSE $PORT
+EXPOSE 5000
 
 # Run the application
-CMD ["python", "-m", "gunicorn", "app:app", "--bind", "0.0.0.0:$PORT", "--workers", "2", "--timeout", "120", "--preload"]
+CMD ["sh", "-c", "python -m gunicorn app:app --bind 0.0.0.0:${PORT:-5000} --workers 2 --timeout 120 --preload"]

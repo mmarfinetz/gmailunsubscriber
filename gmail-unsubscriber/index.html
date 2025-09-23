@@ -158,14 +158,14 @@
             </div>
             <div class="modal-body">
                 <p>This will scan your Gmail inbox for subscription emails and attempt to unsubscribe from them automatically.</p>
-                
+
                 <div class="form-group">
                     <label for="search-query">Search Query (Advanced Users)</label>
-                    <input type="text" class="form-control" id="search-query" 
+                    <input type="text" class="form-control" id="search-query"
                            value='"unsubscribe" OR "email preferences" OR "opt-out" OR "subscription preferences"'>
                     <small>This is the search query used to find subscription emails in your inbox.</small>
                 </div>
-                
+
                 <div class="form-group">
                     <label for="max-emails">Maximum Emails to Process</label>
                     <input type="number" class="form-control" id="max-emails" value="50" min="1" max="500">
@@ -174,8 +174,65 @@
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancel-run">Cancel</button>
-                <button class="btn" id="start-run">Start</button>
+                <button class="btn btn-primary" id="preview-run">Preview</button>
+                <button class="btn" id="start-run">Start (Legacy)</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Preview Modal -->
+    <div class="modal-overlay" id="preview-modal">
+        <div class="modal modal-large">
+            <div class="modal-header">
+                <h3>Preview Unsubscribe Candidates</h3>
+                <button class="modal-close" id="preview-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div id="preview-loading" style="text-align: center; padding: 20px;">
+                    <div class="spinner"></div>
+                    <p>Scanning emails...</p>
+                </div>
+                <div id="preview-content" style="display: none;">
+                    <p id="preview-summary"></p>
+                    <div class="preview-options">
+                        <label>
+                            <input type="checkbox" id="select-all-candidates" checked>
+                            Select All
+                        </label>
+                        <label style="margin-left: 20px;">
+                            <input type="checkbox" id="create-filters" checked>
+                            Create filters to auto-archive future emails from these senders
+                        </label>
+                    </div>
+                    <div class="preview-table-container" style="max-height: 400px; overflow-y: auto;">
+                        <table class="preview-table">
+                            <thead>
+                                <tr>
+                                    <th>Select</th>
+                                    <th>Sender</th>
+                                    <th>Subject</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="preview-table-body">
+                                <!-- Candidates will be added here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancel-preview">Cancel</button>
+                <button class="btn btn-primary" id="apply-actions" disabled>Apply Actions</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Undo Toast -->
+    <div class="toast" id="undo-toast" style="display: none;">
+        <div class="toast-content">
+            <span id="toast-message">Actions applied successfully</span>
+            <button class="btn btn-small" id="undo-button">Undo</button>
         </div>
     </div>
 

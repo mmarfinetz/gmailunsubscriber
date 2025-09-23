@@ -106,11 +106,26 @@ class DatabaseManager:
                         )
                     ''')
                     
+                    # Create operations_history table for undo functionality
+                    conn.execute('''
+                        CREATE TABLE IF NOT EXISTS operations_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT NOT NULL,
+                            operation_id TEXT UNIQUE NOT NULL,
+                            payload_json TEXT NOT NULL,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            undone INTEGER DEFAULT 0,
+                            FOREIGN KEY (user_id) REFERENCES users (user_id)
+                        )
+                    ''')
+
                     # Create indexes for better performance
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_activities_user_id ON user_activities (user_id)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON user_activities (timestamp)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_domains_user_id ON domains_unsubscribed (user_id)')
-                    
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_operations_user_id ON operations_history (user_id)')
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_operations_operation_id ON operations_history (operation_id)')
+
                     conn.commit()
                     logger.info("Database tables and indexes created successfully")
                     return True
@@ -451,20 +466,136 @@ class DatabaseManager:
             with self.lock:
                 with self.get_connection() as conn:
                     result = conn.execute('''
-                        DELETE FROM user_activities 
+                        DELETE FROM user_activities
                         WHERE timestamp < datetime('now', '-{} days')
                     '''.format(days_to_keep))
-                    
+
                     deleted_count = result.rowcount
                     conn.commit()
-                    
+
                     if deleted_count > 0:
                         logger.info(f"Cleaned up {deleted_count} old activities")
-                    
+
                     return True
-                    
+
         except Exception as e:
             logger.error(f"Failed to cleanup old activities: {e}")
+            return False
+
+    def save_operation(self, user_id: str, operation_id: str, payload_dict: Dict[str, Any]) -> bool:
+        """Save an operation for undo functionality.
+
+        Args:
+            user_id: User ID
+            operation_id: Unique operation ID (UUID)
+            payload_dict: Dictionary containing operation details
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with self.get_connection() as conn:
+                # Ensure user exists
+                self.ensure_user_exists(user_id)
+
+                # Convert payload to JSON
+                payload_json = json.dumps(payload_dict)
+
+                conn.execute('''
+                    INSERT INTO operations_history (user_id, operation_id, payload_json)
+                    VALUES (?, ?, ?)
+                ''', (user_id, operation_id, payload_json))
+
+                conn.commit()
+                logger.info(f"Saved operation {operation_id} for user {user_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to save operation {operation_id}: {e}")
+            return False
+
+    def get_operation(self, user_id: str, operation_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve an operation for undo.
+
+        Args:
+            user_id: User ID
+            operation_id: Operation ID to retrieve
+
+        Returns:
+            Operation payload dict or None if not found
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT payload_json, undone
+                    FROM operations_history
+                    WHERE user_id = ? AND operation_id = ?
+                ''', (user_id, operation_id))
+
+                row = cursor.fetchone()
+                if row:
+                    payload = json.loads(row['payload_json'])
+                    payload['undone'] = bool(row['undone'])
+                    return payload
+                else:
+                    logger.warning(f"Operation {operation_id} not found for user {user_id}")
+                    return None
+
+        except Exception as e:
+            logger.error(f"Failed to get operation {operation_id}: {e}")
+            return None
+
+    def mark_operation_undone(self, user_id: str, operation_id: str) -> bool:
+        """Mark an operation as undone.
+
+        Args:
+            user_id: User ID
+            operation_id: Operation ID to mark as undone
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with self.get_connection() as conn:
+                conn.execute('''
+                    UPDATE operations_history
+                    SET undone = 1
+                    WHERE user_id = ? AND operation_id = ?
+                ''', (user_id, operation_id))
+
+                conn.commit()
+                logger.info(f"Marked operation {operation_id} as undone for user {user_id}")
+                return True
+
+        except Exception as e:
+            logger.error(f"Failed to mark operation {operation_id} as undone: {e}")
+            return False
+
+    def delete_user_data(self, user_id: str) -> bool:
+        """Delete all stored data for a user.
+
+        Args:
+            user_id: User ID whose data should be deleted
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            with self.lock:
+                with self.get_connection() as conn:
+                    # Delete from all tables
+                    conn.execute('DELETE FROM operations_history WHERE user_id = ?', (user_id,))
+                    conn.execute('DELETE FROM domains_unsubscribed WHERE user_id = ?', (user_id,))
+                    conn.execute('DELETE FROM user_activities WHERE user_id = ?', (user_id,))
+                    conn.execute('DELETE FROM user_stats WHERE user_id = ?', (user_id,))
+                    conn.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
+
+                    conn.commit()
+                    logger.info(f"Deleted all data for user {user_id}")
+                    return True
+
+        except Exception as e:
+            logger.error(f"Failed to delete data for user {user_id}: {e}")
             return False
 
 

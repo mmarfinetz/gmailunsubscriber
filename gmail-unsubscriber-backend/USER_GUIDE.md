@@ -32,11 +32,35 @@ The dashboard provides an overview of your unsubscription progress and statistic
 
 ### Starting the Unsubscription Process
 
-1. Click the action button (blue circle with play icon) in the bottom right corner
-2. Configure the unsubscription process:
-   - **Search Query**: The query used to find subscription emails (default should work for most users)
-   - **Maximum Emails to Process**: Limit the number of emails to process in one run
-3. Click "Start" to begin the process
+#### Two-Step Flow (Recommended)
+
+Gmail Unsubscriber now offers a safer two-step process:
+
+1. **Preview Step**:
+   - Click the action button (blue circle with play icon) in the bottom right corner
+   - Configure your search parameters:
+     - **Search Query**: The query used to find subscription emails
+     - **Maximum Emails to Process**: Limit the number of emails to analyze
+   - Click "Preview" to scan emails without making changes
+
+2. **Review Candidates**:
+   - A preview modal will show all detected subscription emails
+   - Each email shows:
+     - Sender information
+     - Subject line
+     - Recommended action (RFC 8058 one-click unsubscribe or label+archive)
+   - Select/deselect emails using checkboxes
+   - Option to create Gmail filters for auto-archiving future emails
+
+3. **Apply Actions**:
+   - Click "Apply Actions" to execute selected unsubscriptions
+   - RFC 8058 compliant emails will be unsubscribed via one-click
+   - Other emails will be labeled and archived
+   - An undo toast appears for reversing label/archive changes
+
+#### Legacy Flow
+
+You can still use the original one-step process by clicking "Start (Legacy)" instead of "Preview"
 
 ### Monitoring Progress
 
@@ -91,6 +115,52 @@ Some emails may fail to unsubscribe for various reasons:
 - The unsubscribe link has expired
 
 For these cases, you may need to manually unsubscribe.
+
+## Undo Functionality
+
+### How Undo Works
+
+After applying unsubscribe actions, you can undo certain changes:
+
+- **Label and Archive Changes**: Can be fully reversed
+  - Emails will be moved back to inbox
+  - UNSUBSCRIBED label will be removed
+  - Created filters will be deleted
+
+- **RFC 8058 One-Click Unsubscribes**: Cannot be undone
+  - These are permanent unsubscriptions
+  - The system will warn you about this limitation
+
+### Using Undo
+
+1. After applying actions, an undo toast appears
+2. Click the "Undo" button within 10 seconds
+3. The system will revert all reversible changes
+4. A summary will show what was undone
+
+## Privacy & Data Management
+
+### What Data We Store
+
+The application stores minimal data to provide its service:
+- Basic statistics (emails scanned, unsubscribed count)
+- Recent activity logs (last 50 actions)
+- List of domains you've unsubscribed from
+- Temporary operation history for undo functionality
+
+### Deleting Your Data
+
+You can delete all app-stored data at any time:
+1. This removes all statistics and activity history
+2. Your Gmail content is never affected
+3. You can continue using the service after deletion
+
+### Data Security
+
+- No email content is permanently stored
+- JWT tokens expire automatically
+- All data is stored locally in your deployment
+- No third-party services receive your data
 
 ## Logging Out
 

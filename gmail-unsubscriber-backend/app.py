@@ -11,6 +11,7 @@ import re
 import time
 import logging
 import secrets
+import uuid
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -141,6 +142,7 @@ CORS(app,
 SCOPES = [
     'openid',  # Google automatically adds this when requesting userinfo.email
     'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/gmail.settings.basic',  # For creating Gmail filters
     'https://www.googleapis.com/auth/userinfo.email'
 ]
 API_SERVICE_NAME = 'gmail'
@@ -721,13 +723,349 @@ def start_unsubscription():
 def get_unsubscription_status():
     """Get the status of the unsubscription process."""
     user_id = g.get('user_id')
-    
+
     # In a real app, this would check the status of the background process
     # For demo purposes, we'll just return the stats
     return jsonify({
         "stats": user_stats.get(user_id, {}),
         "activities": user_activities.get(user_id, [])
     })
+
+@app.route('/api/unsubscribe/preview', methods=['POST'])
+@auth_required
+def preview_unsubscribe_candidates():
+    """Preview emails for unsubscription without making changes."""
+    user_id = g.get('user_id')
+    data = request.json
+
+    search_query = data.get('search_query', '"unsubscribe" OR "email preferences" OR "opt-out"')
+    max_emails = data.get('max_emails', 50)
+
+    try:
+        # Build Gmail service
+        creds = Credentials.from_authorized_user_info(g.credentials, SCOPES)
+        if not creds.valid and creds.refresh_token:
+            creds.refresh(Request())
+        service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
+
+        # Search for emails
+        messages = search_emails(service, search_query, max_emails)
+
+        if not messages:
+            return jsonify({
+                "candidates": [],
+                "message": "No subscription emails found"
+            })
+
+        candidates = []
+        for msg in messages[:max_emails]:
+            msg_id = msg.get('id')
+            try:
+                # Get email metadata (including RFC 8058 detection)
+                message = service.users().messages().get(
+                    userId='me',
+                    id=msg_id,
+                    format='metadata',
+                    metadataHeaders=['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
+                ).execute()
+
+                metadata = extract_email_metadata(message)
+
+                # Determine recommended action
+                if metadata['has_rfc8058_one_click']:
+                    recommended_action = 'one_click_unsub'
+                else:
+                    recommended_action = 'label_archive'
+
+                candidates.append({
+                    'id': msg_id,
+                    'subject': metadata['subject'],
+                    'sender_name': metadata['sender_name'],
+                    'sender_email': metadata['sender_email'],
+                    'domain': metadata['domain'],
+                    'has_rfc8058_one_click': metadata['has_rfc8058_one_click'],
+                    'rfc8058_unsub_url': metadata['rfc8058_unsub_url'],
+                    'recommended_action': recommended_action
+                })
+
+            except Exception as e:
+                logger.error(f"Error processing email {msg_id} for preview: {e}")
+                continue
+
+        # Add info activity
+        add_activity(user_id, "info", f"Generated preview of {len(candidates)} candidates")
+
+        return jsonify({
+            "candidates": candidates,
+            "message": f"Found {len(candidates)} email candidates"
+        })
+
+    except Exception as e:
+        logger.error(f"Error in preview endpoint: {e}")
+        return jsonify({
+            "error": str(e),
+            "candidates": []
+        }), 500
+
+@app.route('/api/unsubscribe/apply', methods=['POST'])
+@auth_required
+def apply_unsubscribe_actions():
+    """Apply unsubscribe actions to selected emails."""
+    user_id = g.get('user_id')
+    data = request.json
+
+    items = data.get('items', [])
+    create_auto_archive_filter = data.get('create_auto_archive_filter', False)
+
+    if not items:
+        return jsonify({"error": "No items provided"}), 400
+
+    try:
+        # Build Gmail service
+        creds = Credentials.from_authorized_user_info(g.credentials, SCOPES)
+        if not creds.valid and creds.refresh_token:
+            creds.refresh(Request())
+        service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
+
+        # Get/create UNSUBSCRIBED label
+        unsubscribed_label_id = ensure_label_exists(service, 'UNSUBSCRIBED')
+
+        # Generate operation ID for undo
+        operation_id = str(uuid.uuid4())
+        operation_payload = {
+            'items': [],
+            'filter_ids': [],
+            'timestamp': datetime.now().isoformat()
+        }
+
+        processed_senders = set()
+        success_count = 0
+        failed_count = 0
+
+        for item in items:
+            msg_id = item.get('id')
+            action = item.get('action')
+
+            try:
+                # Get full message for metadata
+                message = service.users().messages().get(
+                    userId='me',
+                    id=msg_id,
+                    format='metadata',
+                    metadataHeaders=['From', 'Subject', 'List-Unsubscribe', 'List-Unsubscribe-Post']
+                ).execute()
+
+                metadata = extract_email_metadata(message)
+
+                if action == 'one_click_unsub' and metadata['has_rfc8058_one_click']:
+                    # Execute RFC 8058 one-click unsubscribe
+                    if execute_rfc8058_unsub(metadata['rfc8058_unsub_url']):
+                        add_activity(user_id, "success",
+                                   f"Unsubscribed via RFC 8058 from {metadata['sender_name']}",
+                                   metadata)
+                        user_stats[user_id]["total_unsubscribed"] += 1
+                        success_count += 1
+
+                        # Optionally also label and archive the email
+                        if unsubscribed_label_id:
+                            service.users().messages().modify(
+                                userId='me',
+                                id=msg_id,
+                                body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
+                            ).execute()
+
+                            operation_payload['items'].append({
+                                'message_id': msg_id,
+                                'removed_labels': ['INBOX'],
+                                'added_labels': [unsubscribed_label_id],
+                                'one_click_unsub': True
+                            })
+                    else:
+                        add_activity(user_id, "error",
+                                   f"Failed RFC 8058 unsubscribe for {metadata['sender_name']}",
+                                   metadata)
+                        failed_count += 1
+
+                elif action == 'label_archive':
+                    # Label and archive the email
+                    if unsubscribed_label_id:
+                        service.users().messages().modify(
+                            userId='me',
+                            id=msg_id,
+                            body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
+                        ).execute()
+
+                        add_activity(user_id, "success",
+                                   f"Labeled and archived email from {metadata['sender_name']}",
+                                   metadata)
+                        success_count += 1
+
+                        operation_payload['items'].append({
+                            'message_id': msg_id,
+                            'removed_labels': ['INBOX'],
+                            'added_labels': [unsubscribed_label_id],
+                            'one_click_unsub': False
+                        })
+
+                # Track sender for filter creation
+                if metadata['sender_email']:
+                    processed_senders.add(metadata['sender_email'])
+
+                # Update stats
+                user_stats[user_id]["total_scanned"] += 1
+                save_stats_to_db(user_id)
+
+            except Exception as e:
+                logger.error(f"Error processing item {msg_id}: {e}")
+                add_activity(user_id, "error", f"Failed to process email: {str(e)}")
+                failed_count += 1
+
+        # Create filters if requested
+        if create_auto_archive_filter and processed_senders:
+            for sender in processed_senders:
+                filter_id = create_auto_archive_filter(service, sender, unsubscribed_label_id)
+                if filter_id:
+                    operation_payload['filter_ids'].append(filter_id)
+                    add_activity(user_id, "info", f"Created auto-archive filter for {sender}")
+
+        # Save operation for undo
+        db_manager = get_db_manager()
+        if db_manager and operation_payload['items']:
+            db_manager.save_operation(user_id, operation_id, operation_payload)
+
+        # Final summary
+        add_activity(user_id, "success",
+                   f"Applied actions: {success_count} successful, {failed_count} failed")
+
+        return jsonify({
+            "success": True,
+            "operation_id": operation_id,
+            "summary": {
+                "processed": success_count + failed_count,
+                "successful": success_count,
+                "failed": failed_count,
+                "filters_created": len(operation_payload['filter_ids'])
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Error in apply endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/unsubscribe/undo', methods=['POST'])
+@auth_required
+def undo_unsubscribe_operation():
+    """Undo a previous unsubscribe operation."""
+    user_id = g.get('user_id')
+    data = request.json
+
+    operation_id = data.get('operation_id')
+    if not operation_id:
+        return jsonify({"error": "Operation ID required"}), 400
+
+    try:
+        # Get operation from database
+        db_manager = get_db_manager()
+        if not db_manager:
+            return jsonify({"error": "Database not available"}), 500
+
+        operation = db_manager.get_operation(user_id, operation_id)
+        if not operation:
+            return jsonify({"error": "Operation not found"}), 404
+
+        if operation.get('undone'):
+            return jsonify({"error": "Operation already undone"}), 400
+
+        # Build Gmail service
+        creds = Credentials.from_authorized_user_info(g.credentials, SCOPES)
+        if not creds.valid and creds.refresh_token:
+            creds.refresh(Request())
+        service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
+
+        # Revert message label changes
+        reverted_count = 0
+        one_click_count = 0
+
+        for item in operation.get('items', []):
+            if item.get('one_click_unsub'):
+                one_click_count += 1
+                continue  # Can't undo one-click unsubs
+
+            try:
+                # Revert label changes
+                service.users().messages().modify(
+                    userId='me',
+                    id=item['message_id'],
+                    body={
+                        'addLabelIds': item.get('removed_labels', []),
+                        'removeLabelIds': item.get('added_labels', [])
+                    }
+                ).execute()
+                reverted_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed to revert message {item['message_id']}: {e}")
+
+        # Delete created filters
+        deleted_filters = 0
+        for filter_id in operation.get('filter_ids', []):
+            if delete_filter(service, filter_id):
+                deleted_filters += 1
+
+        # Mark operation as undone
+        db_manager.mark_operation_undone(user_id, operation_id)
+
+        # Add activity
+        add_activity(user_id, "info",
+                   f"Undo complete: {reverted_count} emails restored, {deleted_filters} filters deleted")
+
+        response = {
+            "success": True,
+            "summary": {
+                "reverted": reverted_count,
+                "filters_deleted": deleted_filters
+            }
+        }
+
+        if one_click_count > 0:
+            response["warning"] = f"{one_click_count} one-click unsubscribes cannot be undone"
+
+        return jsonify(response)
+
+    except Exception as e:
+        logger.error(f"Error in undo endpoint: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/user/data', methods=['DELETE'])
+@auth_required
+def delete_user_data():
+    """Delete all app-stored data for the authenticated user."""
+    user_id = g.get('user_id')
+
+    try:
+        db_manager = get_db_manager()
+
+        # Delete from database if available
+        if db_manager:
+            db_manager.delete_user_data(user_id)
+
+        # Delete from in-memory storage
+        if user_id in user_stats:
+            del user_stats[user_id]
+        if user_id in user_activities:
+            del user_activities[user_id]
+
+        # Log the deletion
+        logger.info(f"Deleted all data for user {user_id}")
+
+        return jsonify({
+            "success": True,
+            "message": "All user data has been deleted"
+        })
+
+    except Exception as e:
+        logger.error(f"Error deleting user data: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/database/stats', methods=['GET'])
 def get_database_stats():
@@ -1415,7 +1753,7 @@ def extract_text_content(payload, msg_id):
         return ""
 
 def extract_email_metadata(message):
-    """Extract metadata from email headers."""
+    """Extract metadata from email headers including RFC 8058 detection."""
     try:
         metadata = {
             "sender": "",
@@ -1423,16 +1761,20 @@ def extract_email_metadata(message):
             "sender_email": "",
             "domain": "",
             "subject": "",
-            "date": ""
+            "date": "",
+            "list_unsubscribe": "",
+            "list_unsubscribe_post": "",
+            "has_rfc8058_one_click": False,
+            "rfc8058_unsub_url": ""
         }
-        
+
         # Get headers from the email
         headers = message.get('payload', {}).get('headers', [])
-        
+
         for header in headers:
             name = header.get('name', '').lower()
             value = header.get('value', '')
-            
+
             if name == 'from':
                 metadata['sender'] = value
                 # Parse sender name and email
@@ -1453,26 +1795,45 @@ def extract_email_metadata(message):
                     if '@' in value:
                         metadata['domain'] = value.split('@')[1].lower()
                         metadata['sender_name'] = value.split('@')[0]
-                    
+
             elif name == 'subject':
                 metadata['subject'] = value
-                
+
             elif name == 'date':
                 metadata['date'] = value
-        
+
+            elif name == 'list-unsubscribe':
+                metadata['list_unsubscribe'] = value
+
+            elif name == 'list-unsubscribe-post':
+                metadata['list_unsubscribe_post'] = value
+
         # Clean up sender name - remove quotes, extra spaces
         metadata['sender_name'] = metadata['sender_name'].strip('"\'').strip()
-        
+
         # If no sender name, use the domain as a fallback
         if not metadata['sender_name'] and metadata['domain']:
             # Make domain more readable: amazon.com -> Amazon
             domain_parts = metadata['domain'].split('.')
             if domain_parts:
                 metadata['sender_name'] = domain_parts[0].capitalize()
-        
+
+        # RFC 8058 detection
+        if metadata['list_unsubscribe'] and metadata['list_unsubscribe_post']:
+            # Check if List-Unsubscribe-Post contains "List-Unsubscribe=One-Click"
+            if 'list-unsubscribe=one-click' in metadata['list_unsubscribe_post'].lower():
+                # Extract HTTPS URL from List-Unsubscribe header
+                import re
+                # List-Unsubscribe can contain multiple URLs in angle brackets
+                url_matches = re.findall(r'<(https://[^>]+)>', metadata['list_unsubscribe'])
+                if url_matches:
+                    # Use the first HTTPS URL found
+                    metadata['has_rfc8058_one_click'] = True
+                    metadata['rfc8058_unsub_url'] = url_matches[0]
+
         logger.debug(f"Extracted metadata: {metadata}")
         return metadata
-        
+
     except Exception as e:
         logger.error(f"Error extracting email metadata: {type(e).__name__} - {str(e)}")
         return {
@@ -1481,7 +1842,11 @@ def extract_email_metadata(message):
             "sender_email": "",
             "domain": "",
             "subject": "",
-            "date": ""
+            "date": "",
+            "list_unsubscribe": "",
+            "list_unsubscribe_post": "",
+            "has_rfc8058_one_click": False,
+            "rfc8058_unsub_url": ""
         }
 
 def extract_unsub_links(html):
@@ -1522,8 +1887,104 @@ def execute_unsub(link):
             logger.warning(f'Non-200 status for unsubscribe: {link}, status: {response.status_code}')
     except Exception as e:
         logger.error(f'GET request failed for {link}: {e}')
-    
+
     return False
+
+def execute_rfc8058_unsub(url):
+    """Execute RFC 8058 one-click unsubscribe via HTTP POST.
+
+    Args:
+        url: The HTTPS URL to POST to for unsubscription
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # RFC 8058 requires POST with specific body
+        response = requests.post(
+            url,
+            data={'List-Unsubscribe': 'One-Click'},
+            timeout=10,
+            headers={
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'User-Agent': 'Gmail-Unsubscriber/1.0'
+            }
+        )
+
+        if response.status_code in [200, 201, 202, 204]:
+            logger.info(f'Successful RFC 8058 one-click unsubscribe: {url}')
+            return True
+        else:
+            logger.warning(f'Non-200 status for RFC 8058 unsubscribe: {url}, status: {response.status_code}')
+            return False
+
+    except requests.exceptions.Timeout:
+        logger.error(f'RFC 8058 POST timeout for {url}')
+        return False
+    except Exception as e:
+        logger.error(f'RFC 8058 POST failed for {url}: {e}')
+        return False
+
+def create_auto_archive_filter(service, from_criteria, unsubscribed_label_id=None):
+    """Create a Gmail filter to auto-archive future emails from a sender.
+
+    Args:
+        service: Gmail API service instance
+        from_criteria: Email address or domain to filter
+        unsubscribed_label_id: Optional label ID to add to filtered messages
+
+    Returns:
+        str: Created filter ID or None on failure
+    """
+    try:
+        filter_body = {
+            "criteria": {
+                "from": from_criteria
+            },
+            "action": {
+                "removeLabelIds": ["INBOX"]
+            }
+        }
+
+        # Add UNSUBSCRIBED label if provided
+        if unsubscribed_label_id:
+            filter_body["action"]["addLabelIds"] = [unsubscribed_label_id]
+
+        result = service.users().settings().filters().create(
+            userId='me',
+            body=filter_body
+        ).execute()
+
+        filter_id = result.get('id')
+        logger.info(f"Created auto-archive filter for {from_criteria}, ID: {filter_id}")
+        return filter_id
+
+    except Exception as e:
+        logger.error(f"Failed to create filter for {from_criteria}: {e}")
+        return None
+
+def delete_filter(service, filter_id):
+    """Delete a Gmail filter.
+
+    Args:
+        service: Gmail API service instance
+        filter_id: Filter ID to delete
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        service.users().settings().filters().delete(
+            userId='me',
+            id=filter_id
+        ).execute()
+
+        logger.info(f"Deleted filter ID: {filter_id}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to delete filter {filter_id}: {e}")
+        return False
 
 # Check if environment variables are set on startup
 if not os.environ.get('GOOGLE_CLIENT_ID') or not os.environ.get('GOOGLE_CLIENT_SECRET'):
