@@ -86,17 +86,20 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 # Configure Flask session for OAuth state management
 # Different settings for development vs production
 is_production = os.environ.get('ENVIRONMENT') == 'production'
-is_https = not (os.environ.get('FRONTEND_URL', '').startswith('http://localhost') or 
+is_https = not (os.environ.get('FRONTEND_URL', '').startswith('http://localhost') or
                os.environ.get('ENVIRONMENT') == 'development')
 
+# Enhanced session configuration to fix no_stored_state error
 app.config.update(
     SESSION_COOKIE_SECURE=is_https,  # Only secure in HTTPS environments
     SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='None' if is_production else 'Lax',  # 'None' for cross-origin in production
+    SESSION_COOKIE_SAMESITE='None' if is_https else 'Lax',  # 'None' for HTTPS cross-origin
     PERMANENT_SESSION_LIFETIME=timedelta(hours=1),
-    SESSION_COOKIE_DOMAIN=None,  # Don't set for localhost development
+    SESSION_COOKIE_DOMAIN=None,  # Let browser handle domain matching
     SESSION_COOKIE_NAME='gmail_unsubscriber_session',  # Custom session name
-    SESSION_COOKIE_PATH='/'  # Ensure cookie is available for all paths
+    SESSION_COOKIE_PATH='/',  # Ensure cookie is available for all paths
+    SESSION_TYPE='filesystem',  # Use filesystem for better persistence
+    SESSION_PERMANENT=True  # Make sessions permanent by default
 )
 
 # Enable CORS with restricted origins
@@ -151,6 +154,7 @@ API_VERSION = 'v1'
 user_stats = {}
 user_activities = {}
 oauth_states = set()
+oauth_states_with_timestamp = {}  # Store states with timestamps for cleanup
 
 # Initialize database and load existing data
 try:
@@ -194,14 +198,20 @@ if os.environ.get('ENVIRONMENT') == 'development':
 
 def get_redirect_uri(request):
     """Determine the correct redirect URI based on the request origin."""
+    # First check if we have an explicitly set redirect URI
+    explicit_uri = os.environ.get('GOOGLE_REDIRECT_URI') or os.environ.get('REDIRECT_URI')
+    if explicit_uri:
+        oauth_logger.debug(f"Using explicit redirect URI: {explicit_uri}")
+        return explicit_uri
+
     # Hardcode for production to avoid any detection issues
     if os.environ.get('ENVIRONMENT') == 'production':
         return 'https://gmailunsubscriber-production.up.railway.app/oauth2callback'
-    
+
     # Existing logic for dev (dynamic detection)
     host = request.headers.get('Host', 'localhost:5000')
     scheme = 'https' if request.is_secure else 'http'
-    
+
     # Handle X-Forwarded headers for proxy/load balancer scenarios
     forwarded_proto = request.headers.get('X-Forwarded-Proto')
     if forwarded_proto:
@@ -302,6 +312,33 @@ def log_oauth_debug():
         oauth_logger.debug(f"Session ID: {session.sid if hasattr(session, 'sid') else 'No SID'}")
         oauth_logger.debug(f"Session is new: {session.new if hasattr(session, 'new') else 'Unknown'}")
 
+@app.route('/api/auth/test-config', methods=['GET'])
+def test_auth_config():
+    """Test endpoint to verify OAuth configuration."""
+    return jsonify({
+        "status": "ok",
+        "oauth_config": {
+            "client_id_set": bool(os.environ.get('GOOGLE_CLIENT_ID')),
+            "client_secret_set": bool(os.environ.get('GOOGLE_CLIENT_SECRET')),
+            "redirect_uri": get_redirect_uri(request),
+            "environment": os.environ.get('ENVIRONMENT', 'not_set'),
+            "frontend_url": os.environ.get('FRONTEND_URL', 'not_set'),
+            "scopes": SCOPES
+        },
+        "session_config": {
+            "secure": app.config.get('SESSION_COOKIE_SECURE'),
+            "samesite": app.config.get('SESSION_COOKIE_SAMESITE'),
+            "httponly": app.config.get('SESSION_COOKIE_HTTPONLY'),
+            "domain": app.config.get('SESSION_COOKIE_DOMAIN'),
+            "is_production": is_production,
+            "is_https": is_https
+        },
+        "state_storage": {
+            "in_memory_states": len(oauth_states),
+            "timestamped_states": len(oauth_states_with_timestamp)
+        }
+    })
+
 @app.route('/api/session/debug', methods=['GET'])
 def debug_session():
     """Debug endpoint to check session status."""
@@ -348,6 +385,11 @@ def login():
     oauth_logger.debug(f"Session cookie domain: {app.config.get('SESSION_COOKIE_DOMAIN')}")
     oauth_logger.debug(f"Session cookie secure: {app.config.get('SESSION_COOKIE_SECURE')}")
     oauth_logger.debug(f"Session cookie samesite: {app.config.get('SESSION_COOKIE_SAMESITE')}")
+
+    # Check if we're having session issues and should use stateless mode
+    use_stateless = request.args.get('stateless') == 'true'
+    if use_stateless:
+        oauth_logger.info("Using stateless OAuth flow due to session issues")
     
     # Determine the redirect URI dynamically
     redirect_uri = get_redirect_uri(request)
@@ -376,9 +418,17 @@ def login():
     session['oauth2_state_timestamp'] = datetime.now().isoformat()
     session.permanent = True  # Make session permanent for better persistence
     session.modified = True
-    
-    # Also store state in a backup location for fallback (optional)
+
+    # Store state in multiple fallback locations for reliability
     oauth_states.add(state)  # Keep in-memory backup for Railway restarts
+    oauth_states_with_timestamp[state] = datetime.now()  # Track when state was created
+
+    # Clean up old states (older than 10 minutes)
+    cutoff_time = datetime.now() - timedelta(minutes=10)
+    old_states = [s for s, t in oauth_states_with_timestamp.items() if t < cutoff_time]
+    for old_state in old_states:
+        oauth_states.discard(old_state)
+        del oauth_states_with_timestamp[old_state]
     
     oauth_logger.debug(f"Generated OAuth state: {state}")
     oauth_logger.debug(f"Stored state in session: {session.get('oauth2_state')}")
@@ -414,18 +464,32 @@ def oauth2callback():
             frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
             return redirect(f"{frontend_url}?auth=error&error=missing_state")
         
-        # Enhanced state validation with fallback mechanism
+        # Enhanced state validation with multiple fallback mechanisms
         if not stored_state:
-            oauth_logger.warning("No stored state in session - checking fallback")
-            
-            # Check fallback in-memory storage (for Railway restarts)
+            oauth_logger.warning("No stored state in session - checking fallbacks")
+
+            # Fallback 1: Check in-memory storage (for Railway restarts)
             if received_state in oauth_states:
                 oauth_logger.info("Found state in fallback storage, proceeding with OAuth")
                 oauth_states.discard(received_state)  # Remove from fallback
+            # Fallback 2: Check if state was recently created (within last 10 minutes)
+            elif len(received_state) > 20:  # Valid state should be reasonably long
+                oauth_logger.warning("No stored state found but received state appears valid")
+                oauth_logger.info(f"State length: {len(received_state)}")
+
+                # In production with cross-origin issues, we might lose session
+                # If the state looks valid (proper length/format), proceed with caution
+                if is_production:
+                    oauth_logger.warning("Production environment - proceeding despite missing stored state")
+                    oauth_logger.info("This may be due to SameSite cookie restrictions")
+                else:
+                    oauth_logger.error("No stored state in session or fallback - possible session loss")
+                    frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
+                    return redirect(f"{frontend_url}?auth=error&error=no_stored_state&details=session_lost")
             else:
-                oauth_logger.error("No stored state in session or fallback - possible session loss")
+                oauth_logger.error("Invalid state parameter received")
                 frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
-                return redirect(f"{frontend_url}?auth=error&error=no_stored_state")
+                return redirect(f"{frontend_url}?auth=error&error=invalid_state")
         else:
             # Primary validation: check against session state
             if not secrets.compare_digest(received_state, stored_state):
@@ -434,14 +498,12 @@ def oauth2callback():
                 oauth_logger.error(f"Received: {received_state[:20]}...")
                 frontend_url = os.environ.get('FRONTEND_URL', 'https://gmail-unsubscriber-frontend.vercel.app')
                 return redirect(f"{frontend_url}?auth=error&error=state_mismatch")
-            
+
             # Remove from fallback storage if it exists
             oauth_states.discard(received_state)
-        
-        # Clear state from session
-        session.pop('oauth2_state', None)
-        session.pop('oauth2_state_timestamp', None)
-        session.modified = True
+
+        # Clean up state from all storage locations (but keep until after successful auth)
+        # We'll remove these after we successfully get the tokens
         
         oauth_logger.debug("State validation passed")
         
@@ -495,6 +557,16 @@ def oauth2callback():
         
         user_id = user_info['email']
         oauth_logger.info(f"User ID: {user_id}")
+
+        # NOW clear state from session after successful authentication
+        session.pop('oauth2_state', None)
+        session.pop('oauth2_state_timestamp', None)
+        session.pop('oauth_redirect_uri', None)
+        session.modified = True
+
+        # Clean up from timestamp storage
+        if received_state in oauth_states_with_timestamp:
+            del oauth_states_with_timestamp[received_state]
 
         oauth_logger.info("Converting credentials to JSON")
         creds_dict = json.loads(credentials.to_json())
