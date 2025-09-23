@@ -884,15 +884,25 @@ def preview_unsubscribe_candidates():
 def apply_unsubscribe_actions():
     """Apply unsubscribe actions to selected emails."""
     user_id = g.get('user_id')
-    data = request.json
+    data = request.get_json(force=True) or {}
 
     items = data.get('items', [])
-    create_auto_archive_filter = data.get('create_auto_archive_filter', False)
+    should_create_auto_archive_filter = bool(data.get('create_auto_archive_filter', False))
 
     if not items:
         return jsonify({"error": "No items provided"}), 400
 
     try:
+        # Defensive check: ensure helper function is callable
+        import inspect
+        if not callable(create_sender_auto_archive_filter):
+            logger.error("create_sender_auto_archive_filter is not callable - name collision detected")
+            return jsonify({
+                "error": "Internal configuration error",
+                "error_type": "name_collision",
+                "message": "Helper function is not callable"
+            }), 500
+
         # Build Gmail service
         creds = Credentials.from_authorized_user_info(g.credentials, SCOPES)
         if not creds.valid and creds.refresh_token:
@@ -993,9 +1003,9 @@ def apply_unsubscribe_actions():
                 failed_count += 1
 
         # Create filters if requested
-        if create_auto_archive_filter and processed_senders:
+        if should_create_auto_archive_filter and processed_senders:
             for sender in processed_senders:
-                filter_id = create_auto_archive_filter(service, sender, unsubscribed_label_id)
+                filter_id = create_sender_auto_archive_filter(service, sender, unsubscribed_label_id)
                 if filter_id:
                     operation_payload['filter_ids'].append(filter_id)
                     add_activity(user_id, "info", f"Created auto-archive filter for {sender}")
@@ -1022,7 +1032,16 @@ def apply_unsubscribe_actions():
 
     except Exception as e:
         logger.error(f"Error in apply endpoint: {e}")
-        return jsonify({"error": str(e)}), 500
+        error_type = type(e).__name__
+        error_msg = str(e)
+
+        # Enhanced error response for better frontend handling
+        return jsonify({
+            "error": error_msg,
+            "error_type": error_type,
+            "message": f"Failed to apply actions: {error_msg}",
+            "where": "apply_unsubscribe_actions"
+        }), 500
 
 @app.route('/api/unsubscribe/undo', methods=['POST'])
 @auth_required
@@ -1997,7 +2016,7 @@ def execute_rfc8058_unsub(url):
         logger.error(f'RFC 8058 POST failed for {url}: {e}')
         return False
 
-def create_auto_archive_filter(service, from_criteria, unsubscribed_label_id=None):
+def create_sender_auto_archive_filter(service, from_criteria, unsubscribed_label_id=None):
     """Create a Gmail filter to auto-archive future emails from a sender.
 
     Args:
