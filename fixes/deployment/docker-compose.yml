@@ -1,0 +1,313 @@
+version: '3.8'
+
+# Production-Ready Gmail Unsubscriber Stack
+# Includes: Backend API, Redis, PostgreSQL (optional), Nginx
+
+services:
+  # =============================================================================
+  # REDIS - Caching & Rate Limiting
+  # =============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: gmail-unsub-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-changeme}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - backend
+
+  # =============================================================================
+  # POSTGRESQL (Optional - for production instead of SQLite)
+  # =============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: gmail-unsub-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME:-gmail_unsubscriber}
+      POSTGRES_USER: ${DATABASE_USER:-gmail_user}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-changeme}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER:-gmail_user}"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - backend
+
+  # =============================================================================
+  # BACKEND API
+  # =============================================================================
+  backend:
+    build:
+      context: ../../gmail-unsubscriber-backend
+      dockerfile: ../fixes/deployment/Dockerfile
+      args:
+        PYTHON_VERSION: 3.11
+    container_name: gmail-unsub-backend
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      # Application
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      DEBUG: "false"
+
+      # Security
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-${SECRET_KEY}}
+
+      # Google OAuth
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?GOOGLE_CLIENT_ID is required}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?GOOGLE_CLIENT_SECRET is required}
+      GOOGLE_PROJECT_ID: ${GOOGLE_PROJECT_ID:?GOOGLE_PROJECT_ID is required}
+      REDIRECT_URI: ${REDIRECT_URI:?REDIRECT_URI is required}
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL is required}
+
+      # Database
+      DATABASE_URL: postgresql://${DATABASE_USER:-gmail_user}:${DATABASE_PASSWORD:-changeme}@postgres:5432/${DATABASE_NAME:-gmail_unsubscriber}
+      DATABASE_POOL_SIZE: 10
+      DATABASE_MAX_OVERFLOW: 20
+
+      # Redis
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      REDIS_ENABLED: "true"
+
+      # Rate Limiting
+      RATELIMIT_ENABLED: "true"
+      RATELIMIT_STORAGE_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/1
+
+      # Celery
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/2
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/3
+      CELERY_ENABLED: ${CELERY_ENABLED:-false}
+
+      # Monitoring
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      PROMETHEUS_ENABLED: ${PROMETHEUS_ENABLED:-true}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FORMAT: json
+      STRUCTURED_LOGGING: "true"
+
+      # Security
+      CSP_ENABLED: "true"
+      HSTS_ENABLED: "true"
+
+      # Limits
+      MAX_EMAILS_PER_REQUEST: 200
+      SESSION_LIFETIME_MINUTES: 15
+
+      # Optional
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    command: >
+      gunicorn app:app
+      --bind 0.0.0.0:5000
+      --workers ${GUNICORN_WORKERS:-4}
+      --threads ${GUNICORN_THREADS:-2}
+      --worker-class sync
+      --worker-tmp-dir /dev/shm
+      --max-requests 1000
+      --max-requests-jitter 50
+      --timeout 120
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --error-logfile -
+      --log-level info
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - backend
+      - frontend
+
+  # =============================================================================
+  # CELERY WORKER (Optional - for background jobs)
+  # =============================================================================
+  celery-worker:
+    build:
+      context: ../../gmail-unsubscriber-backend
+      dockerfile: ../fixes/deployment/Dockerfile
+      args:
+        PYTHON_VERSION: 3.11
+    container_name: gmail-unsub-celery-worker
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - backend
+    environment:
+      # Same environment as backend
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/2
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/3
+      DATABASE_URL: postgresql://${DATABASE_USER:-gmail_user}:${DATABASE_PASSWORD:-changeme}@postgres:5432/${DATABASE_NAME:-gmail_unsubscriber}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_PROJECT_ID: ${GOOGLE_PROJECT_ID}
+    command: >
+      celery -A celery_app worker
+      --loglevel=info
+      --concurrency=${CELERY_WORKERS:-4}
+      --max-tasks-per-child=1000
+      --time-limit=300
+      --soft-time-limit=240
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - backend
+    profiles:
+      - celery
+
+  # =============================================================================
+  # CELERY BEAT (Optional - for scheduled tasks)
+  # =============================================================================
+  celery-beat:
+    build:
+      context: ../../gmail-unsubscriber-backend
+      dockerfile: ../fixes/deployment/Dockerfile
+      args:
+        PYTHON_VERSION: 3.11
+    container_name: gmail-unsub-celery-beat
+    restart: unless-stopped
+    depends_on:
+      - redis
+      - backend
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/0
+      CELERY_BROKER_URL: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/2
+      CELERY_RESULT_BACKEND: redis://:${REDIS_PASSWORD:-changeme}@redis:6379/3
+    command: >
+      celery -A celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+      --pidfile=/tmp/celerybeat.pid
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - backend
+    profiles:
+      - celery
+
+  # =============================================================================
+  # NGINX (Reverse Proxy)
+  # =============================================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: gmail-unsub-nginx
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - frontend
+    profiles:
+      - nginx
+
+  # =============================================================================
+  # PROMETHEUS (Monitoring - Optional)
+  # =============================================================================
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    container_name: gmail-unsub-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    networks:
+      - backend
+    profiles:
+      - monitoring
+
+  # =============================================================================
+  # GRAFANA (Dashboard - Optional)
+  # =============================================================================
+  grafana:
+    image: grafana/grafana:10.2.2
+    container_name: gmail-unsub-grafana
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_INSTALL_PLUGINS: redis-datasource
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - backend
+    profiles:
+      - monitoring
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  backend:
+    driver: bridge
+  frontend:
+    driver: bridge
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+volumes:
+  redis_data:
+    driver: local
+  postgres_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
