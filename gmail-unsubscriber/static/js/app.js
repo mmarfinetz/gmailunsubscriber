@@ -325,9 +325,10 @@ function loadUserData() {
 
 // Update stats UI
 function updateStatsUI(stats) {
-    totalScanned.textContent = stats.total_scanned || 0;
-    totalUnsubscribed.textContent = stats.total_unsubscribed || 0;
-    timeSaved.textContent = stats.time_saved || 0;
+    // Use animated counters for premium feel
+    animateCounter(totalScanned, stats.total_scanned || 0);
+    animateCounter(totalUnsubscribed, stats.total_unsubscribed || 0);
+    animateCounter(timeSaved, stats.time_saved || 0);
     
     // Update progress bar based on processing state
     let progress = 0;
@@ -1161,5 +1162,144 @@ function truncateText(text, maxLength) {
     return text.substring(0, maxLength) + '...';
 }
 
+// ============================================
+// PREMIUM FEATURES - THEME TOGGLE & ANIMATIONS
+// ============================================
+
+/**
+ * Theme Toggle - Dark Mode Support
+ */
+function initThemeToggle() {
+    const themeToggle = document.getElementById('theme-toggle');
+    if (!themeToggle) return;
+
+    // Check for saved theme preference or default to 'light'
+    const currentTheme = localStorage.getItem('theme') || 'light';
+    document.documentElement.setAttribute('data-theme', currentTheme);
+
+    themeToggle.addEventListener('click', () => {
+        const theme = document.documentElement.getAttribute('data-theme');
+        const newTheme = theme === 'dark' ? 'light' : 'dark';
+
+        document.documentElement.setAttribute('data-theme', newTheme);
+        localStorage.setItem('theme', newTheme);
+
+        // Add a subtle celebration animation
+        themeToggle.style.transform = 'scale(1.2)';
+        setTimeout(() => {
+            themeToggle.style.transform = 'scale(1)';
+        }, 200);
+    });
+}
+
+/**
+ * Animate numbers counting up
+ */
+function animateCounter(element, target, duration = 1000) {
+    if (!element) return;
+
+    const start = 0;
+    const increment = target / (duration / 16); // 60fps
+    let current = start;
+
+    const timer = setInterval(() => {
+        current += increment;
+        if (current >= target) {
+            element.textContent = Math.round(target);
+            clearInterval(timer);
+        } else {
+            element.textContent = Math.round(current);
+        }
+    }, 16);
+}
+
+/**
+ * Add scroll effect to header
+ */
+function initHeaderScroll() {
+    const header = document.querySelector('header');
+    if (!header) return;
+
+    let lastScroll = 0;
+
+    window.addEventListener('scroll', () => {
+        const currentScroll = window.pageYOffset;
+
+        if (currentScroll > 50) {
+            header.classList.add('scrolled');
+        } else {
+            header.classList.remove('scrolled');
+        }
+
+        lastScroll = currentScroll;
+    });
+}
+
+/**
+ * Confetti Animation for Success
+ */
+function createConfetti() {
+    const colors = ['#4285F4', '#34A853', '#FBBC05', '#EA4335', '#A142F4'];
+    const confettiCount = 50;
+
+    for (let i = 0; i < confettiCount; i++) {
+        const confetti = document.createElement('div');
+        confetti.className = 'confetti';
+        confetti.style.left = Math.random() * 100 + '%';
+        confetti.style.background = colors[Math.floor(Math.random() * colors.length)];
+        confetti.style.animationDelay = Math.random() * 3 + 's';
+        confetti.style.animationDuration = (Math.random() * 2 + 3) + 's';
+        document.body.appendChild(confetti);
+
+        // Remove after animation
+        setTimeout(() => {
+            confetti.remove();
+        }, 6000);
+    }
+}
+
+/**
+ * Add ripple effect to buttons
+ */
+function addRippleEffect(button) {
+    button.addEventListener('click', function(e) {
+        const ripple = document.createElement('span');
+        ripple.classList.add('ripple');
+
+        const rect = this.getBoundingClientRect();
+        const size = Math.max(rect.width, rect.height);
+        const x = e.clientX - rect.left - size / 2;
+        const y = e.clientY - rect.top - size / 2;
+
+        ripple.style.width = ripple.style.height = size + 'px';
+        ripple.style.left = x + 'px';
+        ripple.style.top = y + 'px';
+
+        this.appendChild(ripple);
+
+        setTimeout(() => ripple.remove(), 600);
+    });
+}
+
+/**
+ * Initialize all premium features
+ */
+function initPremiumFeatures() {
+    initThemeToggle();
+    initHeaderScroll();
+
+    // Add ripple to all buttons
+    document.querySelectorAll('.btn').forEach(btn => {
+        // Skip if already has ripple
+        if (!btn.dataset.ripple) {
+            btn.dataset.ripple = 'true';
+            // Ripple is handled via CSS
+        }
+    });
+}
+
 // Initialize the app when the DOM is loaded
-document.addEventListener('DOMContentLoaded', initApp);
+document.addEventListener('DOMContentLoaded', () => {
+    initApp();
+    initPremiumFeatures();
+});
