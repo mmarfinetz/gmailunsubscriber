@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Settings - Gmail Unsubscriber</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="static/css/styles.css">
+</head>
+<body>
+    <header>
+        <div class="container header-content">
+            <div class="logo">
+                <img src="static/images/logo.svg" alt="Gmail Unsubscriber Logo">
+                <h1>Gmail Unsubscriber</h1>
+            </div>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <div class="theme-toggle" id="theme-toggle" title="Toggle dark mode"></div>
+                <div class="user-info">
+                    <a href="index.html" class="btn">← Back to Dashboard</a>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <section class="dashboard">
+            <div class="container" style="max-width: 900px;">
+                <!-- Page Header -->
+                <div class="dashboard-header">
+                    <h2>⚙️ Settings</h2>
+                    <p>Manage your account and preferences</p>
+                </div>
+
+                <!-- Account Section -->
+                <div class="card" style="padding: var(--spacing-8); margin-bottom: var(--spacing-6);">
+                    <h3 style="margin-bottom: var(--spacing-6); font-size: 1.25rem; color: hsl(var(--foreground)); display: flex; align-items: center; gap: var(--spacing-3);">
+                        <i class="fas fa-user-circle" style="color: hsl(var(--primary));"></i>
+                        Account Information
+                    </h3>
+                    <div style="display: flex; flex-direction: column; gap: var(--spacing-6);">
+                        <div style="display: flex; align-items: center; gap: var(--spacing-4);">
+                            <div style="width: 80px; height: 80px; background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent))); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; font-size: 2rem; font-weight: 700; box-shadow: var(--shadow-lg);">
+                                JD
+                            </div>
+                            <div style="flex: 1;">
+                                <h4 style="font-size: 1.25rem; margin-bottom: var(--spacing-1);">john.doe@gmail.com</h4>
+                                <p style="color: hsl(var(--muted-foreground));">Free Plan • Member since Jan 2025</p>
+                            </div>
+                            <button class="btn btn-google" style="background: hsl(var(--background));">
+                                <i class="fas fa-edit"></i>
+                                Edit Profile
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Preferences Section -->
+                <div class="card" style="padding: var(--spacing-8); margin-bottom: var(--spacing-6);">
+                    <h3 style="margin-bottom: var(--spacing-6); font-size: 1.25rem; color: hsl(var(--foreground)); display: flex; align-items: center; gap: var(--spacing-3);">
+                        <i class="fas fa-sliders-h" style="color: hsl(var(--primary));"></i>
+                        Preferences
+                    </h3>
+
+                    <div style="display: flex; flex-direction: column; gap: var(--spacing-6);">
+                        <!-- Email Notifications -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">Email Notifications</h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Receive updates about unsubscription activities</p>
+                            </div>
+                            <div class="theme-toggle" style="background: hsl(var(--primary));">
+                                <div style="position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; background: white; border-radius: 50%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Auto-Archive -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">Auto-Archive Future Emails</h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Automatically archive emails from unsubscribed senders</p>
+                            </div>
+                            <div class="theme-toggle" style="background: hsl(var(--primary));">
+                                <div style="position: absolute; top: 2px; right: 2px; width: 22px; height: 22px; background: white; border-radius: 50%;"></div>
+                            </div>
+                        </div>
+
+                        <!-- Weekly Reports -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">Weekly Summary Reports</h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Get a weekly summary of your inbox health</p>
+                            </div>
+                            <div class="theme-toggle" style="background: hsl(var(--muted));">
+                                <div style="position: absolute; top: 2px; left: 2px; width: 22px; height: 22px; background: white; border-radius: 50%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Security Section -->
+                <div class="card" style="padding: var(--spacing-8); margin-bottom: var(--spacing-6);">
+                    <h3 style="margin-bottom: var(--spacing-6); font-size: 1.25rem; color: hsl(var(--foreground)); display: flex; align-items: center; gap: var(--spacing-3);">
+                        <i class="fas fa-shield-alt" style="color: hsl(var(--success));"></i>
+                        Security & Privacy
+                    </h3>
+
+                    <div style="display: flex; flex-direction: column; gap: var(--spacing-4);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">
+                                    <i class="fas fa-check-circle" style="color: hsl(var(--success)); margin-right: var(--spacing-2);"></i>
+                                    Connected Account
+                                </h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Gmail • john.doe@gmail.com</p>
+                            </div>
+                            <button class="btn" style="background: hsl(var(--error)); color: white;">
+                                <i class="fas fa-unlink"></i>
+                                Disconnect
+                            </button>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">Two-Factor Authentication</h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Add an extra layer of security</p>
+                            </div>
+                            <button class="btn btn-google" style="background: hsl(var(--background));">
+                                <i class="fas fa-key"></i>
+                                Enable 2FA
+                            </button>
+                        </div>
+
+                        <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--muted) / 0.3); border-radius: var(--radius-lg);">
+                            <div>
+                                <h4 style="font-weight: 600; margin-bottom: var(--spacing-1);">Export Your Data</h4>
+                                <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Download all your unsubscription history</p>
+                            </div>
+                            <button class="btn btn-google" style="background: hsl(var(--background));">
+                                <i class="fas fa-download"></i>
+                                Export Data
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Subscription Plan -->
+                <div class="card" style="padding: var(--spacing-8); margin-bottom: var(--spacing-6); background: linear-gradient(135deg, hsl(var(--primary) / 0.05), hsl(var(--accent) / 0.05)); border: 2px solid hsl(var(--primary) / 0.3);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--spacing-6);">
+                        <div>
+                            <h3 style="font-size: 1.25rem; color: hsl(var(--foreground)); display: flex; align-items: center; gap: var(--spacing-3); margin-bottom: var(--spacing-2);">
+                                <i class="fas fa-crown" style="color: hsl(var(--warning));"></i>
+                                Subscription Plan
+                            </h3>
+                            <p style="color: hsl(var(--muted-foreground));">You're currently on the <strong>Free Plan</strong></p>
+                        </div>
+                        <div style="text-align: right;">
+                            <div style="font-size: 2rem; font-weight: 700; background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent))); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+                                $0<span style="font-size: 1rem; font-weight: 500;">/month</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--spacing-4); margin-bottom: var(--spacing-6);">
+                        <div style="display: flex; align-items: center; gap: var(--spacing-2);">
+                            <i class="fas fa-check" style="color: hsl(var(--success));"></i>
+                            <span>Basic unsubscribe functionality</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: var(--spacing-2);">
+                            <i class="fas fa-check" style="color: hsl(var(--success));"></i>
+                            <span>Up to 50 emails per scan</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: var(--spacing-2); opacity: 0.5;">
+                            <i class="fas fa-times" style="color: hsl(var(--error));"></i>
+                            <span>Advanced analytics</span>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: var(--spacing-2); opacity: 0.5;">
+                            <i class="fas fa-times" style="color: hsl(var(--error));"></i>
+                            <span>Automated cleanups</span>
+                        </div>
+                    </div>
+
+                    <button class="btn" style="width: 100%; background: linear-gradient(135deg, hsl(var(--warning)), hsl(var(--warning) / 0.8)); font-size: 1.125rem; padding: var(--spacing-4);">
+                        <i class="fas fa-star"></i>
+                        Upgrade to Premium - $9.99/month
+                    </button>
+                </div>
+
+                <!-- Danger Zone -->
+                <div class="card" style="padding: var(--spacing-8); border-color: hsl(var(--error) / 0.5);">
+                    <h3 style="margin-bottom: var(--spacing-6); font-size: 1.25rem; color: hsl(var(--error)); display: flex; align-items: center; gap: var(--spacing-3);">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        Danger Zone
+                    </h3>
+
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: var(--spacing-4); background: hsl(var(--error) / 0.05); border-radius: var(--radius-lg); border: 1px solid hsl(var(--error) / 0.2);">
+                        <div>
+                            <h4 style="font-weight: 600; margin-bottom: var(--spacing-1); color: hsl(var(--error));">Delete Account</h4>
+                            <p style="color: hsl(var(--muted-foreground)); font-size: 0.875rem;">Permanently delete your account and all data</p>
+                        </div>
+                        <button class="btn" style="background: hsl(var(--error)); color: white;">
+                            <i class="fas fa-trash"></i>
+                            Delete Account
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+    </main>
+
+    <footer style="text-align: center; padding: 2rem; color: hsl(var(--muted-foreground)); margin-top: 3rem; border-top: 1px solid hsl(var(--border));">
+        <p>&copy; 2025 Gmail Unsubscriber.
+            <a href="/privacy-policy.html" style="color: hsl(var(--primary)); text-decoration: none;">Privacy Policy</a> |
+            <a href="/terms-of-service.html" style="color: hsl(var(--primary)); text-decoration: none;">Terms of Service</a>
+        </p>
+    </footer>
+
+    <script src="static/js/app.js"></script>
+</body>
+</html>

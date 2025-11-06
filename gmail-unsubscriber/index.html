@@ -15,24 +15,85 @@
                 <img src="static/images/logo.svg" alt="Gmail Unsubscriber Logo" id="logo-placeholder">
                 <h1>Gmail Unsubscriber</h1>
             </div>
-            <div class="user-info hidden" id="user-info">
-                <span id="user-email"></span>
-                <button class="btn" id="logout-btn">Logout</button>
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <div class="theme-toggle" id="theme-toggle" title="Toggle dark mode"></div>
+                <div class="user-info hidden" id="user-info">
+                    <span id="user-email"></span>
+                    <button class="btn" id="logout-btn">Logout</button>
+                </div>
             </div>
         </div>
     </header>
 
     <main>
-        <!-- Authentication Section -->
+        <!-- Authentication Section - Premium Split Screen -->
         <section class="auth-section" id="auth-section">
-            <div class="container">
+            <!-- Benefits Carousel (Left Side) -->
+            <div class="auth-benefits">
+                <h2>Take Control of Your Inbox</h2>
+                <div class="benefits-carousel">
+                    <div class="benefit-item">
+                        <div class="benefit-icon">
+                            <i class="fas fa-magic"></i>
+                        </div>
+                        <div class="benefit-text">
+                            <h3>Smart AI Detection</h3>
+                            <p>Our AI automatically identifies subscription emails with 99.9% accuracy</p>
+                        </div>
+                    </div>
+                    <div class="benefit-item">
+                        <div class="benefit-icon">
+                            <i class="fas fa-bolt"></i>
+                        </div>
+                        <div class="benefit-text">
+                            <h3>One-Click Unsubscribe</h3>
+                            <p>Unsubscribe from hundreds of emails in seconds, not hours</p>
+                        </div>
+                    </div>
+                    <div class="benefit-item">
+                        <div class="benefit-icon">
+                            <i class="fas fa-shield-alt"></i>
+                        </div>
+                        <div class="benefit-text">
+                            <h3>100% Secure</h3>
+                            <p>We never read, store, or share your personal emails</p>
+                        </div>
+                    </div>
+                    <div class="benefit-item">
+                        <div class="benefit-icon">
+                            <i class="fas fa-clock"></i>
+                        </div>
+                        <div class="benefit-text">
+                            <h3>Save Hours Weekly</h3>
+                            <p>Reclaim an average of 4 hours per week from email management</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auth Form (Right Side) -->
+            <div class="auth-form-container">
                 <div class="auth-card">
-                    <h2>Simplify Your Inbox</h2>
-                    <p>Automatically unsubscribe from unwanted emails with just one click. Connect your Gmail account to get started.</p>
+                    <h2>Get Started Free</h2>
+                    <p>Join thousands of users who've reclaimed their inbox. No credit card required.</p>
                     <button class="btn btn-google" id="auth-btn">
                         <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="Google Logo">
-                        Sign in with Google
+                        Continue with Google
                     </button>
+                    <div class="security-badges">
+                        <div class="security-badge">
+                            <i class="fas fa-check-circle"></i>
+                            <span>Google Verified</span>
+                        </div>
+                        <div class="security-badge">
+                            <i class="fas fa-lock"></i>
+                            <span>SSL Secure</span>
+                        </div>
+                        <div class="security-badge">
+                            <i class="fas fa-user-shield"></i>
+                            <span>GDPR Compliant</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </section>
