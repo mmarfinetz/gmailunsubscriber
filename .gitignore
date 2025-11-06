@@ -66,25 +66,26 @@ token.pickle
 # Node
 node_modules
 
-# Claude Code
-.claude/settings.local.json
-.claude/deployment.log
-.claude/debug.log
-.claude/*.backup
-
+# Claude Code & AI tools
+.claude/
+.cursor/
+.taskmaster/
 CLAUDE.md
 .env.local
 
+# Debug and test files
 dev-debug.log
+debug_*.py
+test_*.py
+test_*.sh
+test_*.html
+*_debug.log
+*.backup
+
 # Dependency directories
 node_modules/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
-# OS specific
-
-# Task files
-# tasks.json
-# tasks/ 
+*.sw? 
