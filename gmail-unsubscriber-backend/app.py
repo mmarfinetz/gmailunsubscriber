@@ -574,14 +574,31 @@ def oauth2callback():
         
         # Initialize user stats and activities
         if user_id not in user_stats:
-            user_stats[user_id] = {
-                "total_scanned": 0,
-                "total_unsubscribed": 0,
-                "time_saved": 0,
-                "domains_unsubscribed": {}
-            }
-            oauth_logger.info(f"Initialized stats for user: {user_id}")
-            save_stats_to_db(user_id)
+            # Try to load from database first before initializing with zeros
+            db_manager = get_db_manager()
+            if db_manager:
+                loaded_stats = db_manager.load_user_stats()
+                if user_id in loaded_stats:
+                    user_stats[user_id] = loaded_stats[user_id]
+                    oauth_logger.info(f"Loaded existing stats for user: {user_id}")
+                else:
+                    user_stats[user_id] = {
+                        "total_scanned": 0,
+                        "total_unsubscribed": 0,
+                        "time_saved": 0,
+                        "domains_unsubscribed": {}
+                    }
+                    oauth_logger.info(f"Initialized new stats for user: {user_id}")
+                    save_stats_to_db(user_id)
+            else:
+                user_stats[user_id] = {
+                    "total_scanned": 0,
+                    "total_unsubscribed": 0,
+                    "time_saved": 0,
+                    "domains_unsubscribed": {}
+                }
+                oauth_logger.info(f"Initialized stats for user (no DB): {user_id}")
+                save_stats_to_db(user_id)
         
         if user_id not in user_activities:
             activity = {
@@ -724,12 +741,43 @@ def debug_env():
 def get_stats():
     """Get the user's unsubscription statistics."""
     user_id = g.get('user_id')
-    
+
     return jsonify(user_stats.get(user_id, {
         "total_scanned": 0,
         "total_unsubscribed": 0,
         "time_saved": 0
     }))
+
+@app.route('/api/stats/history', methods=['GET'])
+@auth_required
+def get_stats_history():
+    """Get the user's historical statistics.
+
+    Query params:
+        days: Number of days of history to retrieve (default: 30)
+    """
+    user_id = g.get('user_id')
+    days = request.args.get('days', 30, type=int)
+
+    try:
+        db_manager = get_db_manager()
+        if db_manager:
+            history = db_manager.get_stats_history(user_id, days)
+            return jsonify({
+                "success": True,
+                "history": history
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Database not available"
+            }), 503
+    except Exception as e:
+        logger.error(f"Error retrieving stats history for user {user_id}: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 @app.route('/api/activities', methods=['GET'])
 @auth_required
@@ -1451,14 +1499,24 @@ def add_activity(user_id, activity_type, message, metadata=None):
     
     return activity
 
-def save_stats_to_db(user_id):
-    """Save user statistics to database."""
+def save_stats_to_db(user_id, save_snapshot=False):
+    """Save user statistics to database and optionally save a snapshot to history.
+
+    Args:
+        user_id: User ID
+        save_snapshot: If True, also save a snapshot to stats_history table
+    """
     try:
         db_manager = get_db_manager()
         if db_manager and user_id in user_stats:
             success = db_manager.save_single_user_stats(user_id, user_stats[user_id])
             if not success:
                 logger.warning(f"Failed to save stats to database for user: {user_id}")
+
+            # Save snapshot to history if requested
+            if save_snapshot and success:
+                db_manager.save_stats_snapshot(user_id, user_stats[user_id])
+                logger.debug(f"Saved stats snapshot for user: {user_id}")
         else:
             logger.debug("Database manager not available or user not found for stats save")
     except Exception as e:
@@ -1679,9 +1737,9 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                             user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
                     
                     logger.debug(f"Updated unsubscribe stats for user {user_id}")
-                    
-                    # Save updated stats to database
-                    save_stats_to_db(user_id)
+
+                    # Save updated stats to database with snapshot
+                    save_stats_to_db(user_id, save_snapshot=True)
                     
                 except Exception as unsub_stats_error:
                     logger.error(f"Error updating unsubscribe stats for user {user_id}: {str(unsub_stats_error)}")

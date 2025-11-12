@@ -119,12 +119,28 @@ class DatabaseManager:
                         )
                     ''')
 
+                    # Create stats_history table for tracking changes over time
+                    conn.execute('''
+                        CREATE TABLE IF NOT EXISTS stats_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT NOT NULL,
+                            total_scanned INTEGER DEFAULT 0,
+                            total_unsubscribed INTEGER DEFAULT 0,
+                            time_saved INTEGER DEFAULT 0,
+                            emails_deleted INTEGER DEFAULT 0,
+                            recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (user_id) REFERENCES users (user_id)
+                        )
+                    ''')
+
                     # Create indexes for better performance
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_activities_user_id ON user_activities (user_id)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_activities_timestamp ON user_activities (timestamp)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_domains_user_id ON domains_unsubscribed (user_id)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_operations_user_id ON operations_history (user_id)')
                     conn.execute('CREATE INDEX IF NOT EXISTS idx_operations_operation_id ON operations_history (operation_id)')
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_stats_history_user_id ON stats_history (user_id)')
+                    conn.execute('CREATE INDEX IF NOT EXISTS idx_stats_history_recorded_at ON stats_history (recorded_at)')
 
                     conn.commit()
                     logger.info("Database tables and indexes created successfully")
@@ -455,10 +471,63 @@ class DatabaseManager:
                 stats['last_activity'] = cursor.fetchone()[0]
                 
                 return stats
-                
+
         except Exception as e:
             logger.error(f"Failed to get database stats: {e}")
             return {}
+
+    def save_stats_snapshot(self, user_id: str, stats: Dict[str, Any]) -> bool:
+        """Save a snapshot of user statistics to history."""
+        try:
+            with self.get_connection() as conn:
+                conn.execute('''
+                    INSERT INTO stats_history
+                    (user_id, total_scanned, total_unsubscribed, time_saved, emails_deleted)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    user_id,
+                    stats.get('total_scanned', 0),
+                    stats.get('total_unsubscribed', 0),
+                    stats.get('time_saved', 0),
+                    stats.get('total_unsubscribed', 0)  # emails_deleted is same as total_unsubscribed
+                ))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Failed to save stats snapshot for user {user_id}: {e}")
+            return False
+
+    def get_stats_history(self, user_id: str, days: int = 30) -> List[Dict[str, Any]]:
+        """Get historical statistics for a user over the specified number of days."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT
+                        total_scanned,
+                        total_unsubscribed,
+                        time_saved,
+                        emails_deleted,
+                        recorded_at
+                    FROM stats_history
+                    WHERE user_id = ?
+                    AND recorded_at >= datetime('now', '-' || ? || ' days')
+                    ORDER BY recorded_at ASC
+                ''', (user_id, days))
+
+                history = []
+                for row in cursor:
+                    history.append({
+                        'total_scanned': row['total_scanned'],
+                        'total_unsubscribed': row['total_unsubscribed'],
+                        'time_saved': row['time_saved'],
+                        'emails_deleted': row['emails_deleted'],
+                        'recorded_at': row['recorded_at']
+                    })
+
+                return history
+        except Exception as e:
+            logger.error(f"Failed to get stats history for user {user_id}: {e}")
+            return []
     
     def cleanup_old_activities(self, days_to_keep: int = 30) -> bool:
         """Clean up activities older than specified days."""
