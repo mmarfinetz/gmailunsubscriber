@@ -46,14 +46,21 @@ let currentProcessingStatus = 'idle';
 
 // Initialize the application
 function initApp() {
-    // Check if user is already authenticated
-    checkAuthStatus();
-    
-    // Set up event listeners
+    // Set up event listeners first
     setupEventListeners();
-    
-    // Check for auth callback
-    checkAuthCallback();
+
+    // Check for auth callback FIRST (before checking auth status)
+    // This prevents showing login screen when user is being redirected back from OAuth
+    const urlParams = new URLSearchParams(window.location.search);
+    const isAuthCallback = urlParams.has('auth');
+
+    if (isAuthCallback) {
+        // Process the OAuth callback
+        checkAuthCallback();
+    } else {
+        // Not a callback, check if user is already authenticated
+        checkAuthStatus();
+    }
 }
 
 // Check if this is a callback from authentication
@@ -66,33 +73,45 @@ function checkAuthCallback() {
     const details = urlParams.get('details');
 
     console.log('=== OAuth Callback Check ===');
+    console.log('Auth status:', authStatus);
+    console.log('Email:', email);
+    console.log('Has token:', !!token);
 
     if (authStatus === 'error') {
         console.error('OAuth authentication failed:', error, details);
         alert(`Authentication failed: ${error}\n${details ? `Details: ${details}` : ''}`);
+        showAuthScreen();
         return;
     }
 
     if (authStatus === 'success' && email && token) {
-        console.log('OAuth authentication successful');
-        console.log('Email:', email);
-        console.log('Token length:', token.length);
-        
-        // Clear URL parameters
+        console.log('✓ OAuth authentication successful');
+        console.log('✓ Email:', email);
+        console.log('✓ Token length:', token.length);
+
+        // Store token FIRST
+        localStorage.setItem('auth_token', token);
+        console.log('✓ Token stored in localStorage');
+
+        // Clear URL parameters to clean up the URL
         window.history.replaceState({}, document.title, window.location.pathname);
+        console.log('✓ URL parameters cleared');
 
         // Update UI
         userEmail.textContent = email;
-        localStorage.setItem('auth_token', token);
-        console.log('Token stored in localStorage');
-        
+
+        // Show dashboard
+        console.log('✓ Showing dashboard...');
         showDashboard();
 
         // Load user data
+        console.log('✓ Loading user data...');
         loadUserData();
-        
-        // Debug auth state after successful login
-        debugAuthState();
+
+        console.log('=== OAuth Callback Complete ===');
+    } else if (authStatus) {
+        console.warn('Unknown auth status or missing required parameters');
+        console.warn('Status:', authStatus, 'Email:', email, 'Token present:', !!token);
     }
 }
 
