@@ -994,6 +994,21 @@ def apply_unsubscribe_actions():
                                    f"Unsubscribed via RFC 8058 from {metadata['sender_name']}",
                                    metadata)
                         user_stats[user_id]["total_unsubscribed"] += 1
+                        user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
+
+                        # Track domain statistics
+                        domain = metadata.get("domain", "unknown")
+                        if domain:
+                            if domain not in user_stats[user_id]["domains_unsubscribed"]:
+                                user_stats[user_id]["domains_unsubscribed"][domain] = {
+                                    "count": 0,
+                                    "sender_name": metadata.get("sender_name", domain),
+                                    "emails": set()
+                                }
+                            user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
+                            if metadata.get("sender_email"):
+                                user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
+
                         success_count += 1
 
                         # Optionally also label and archive the email
@@ -1062,6 +1077,9 @@ def apply_unsubscribe_actions():
         db_manager = get_db_manager()
         if db_manager and operation_payload['items']:
             db_manager.save_operation(user_id, operation_id, operation_payload)
+
+        # Save updated stats to database with snapshot
+        save_stats_to_db(user_id, save_snapshot=True)
 
         # Final summary
         add_activity(user_id, "success",
