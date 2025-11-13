@@ -233,7 +233,7 @@ function handleAuth() {
             console.error('Error starting authentication:', error);
             
             // Reset auth button
-            authBtn.innerHTML = '<img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="Google Logo"> Sign in with Google';
+            authBtn.innerHTML = '<img src="static/images/google-logo.svg" alt="Google Logo"> Continue with Google';
             authBtn.disabled = false;
             
             alert('Failed to start authentication. Please try again.');
