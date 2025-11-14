@@ -43,6 +43,7 @@ let processedEmails = 0;
 let totalEmailsToProcess = 0;
 let statusCheckInterval = null;
 let currentProcessingStatus = 'idle';
+let statsPollingInterval = null;
 
 // Initialize the application
 function initApp() {
@@ -266,6 +267,9 @@ function showDashboard() {
     dashboardSection.classList.remove('hidden');
     userInfo.classList.remove('hidden');
     actionButton.classList.remove('hidden');
+
+    // Start polling for stats updates
+    startStatsPolling();
 }
 
 // Show the auth screen
@@ -274,6 +278,88 @@ function showAuthScreen() {
     userInfo.classList.add('hidden');
     actionButton.classList.add('hidden');
     authSection.classList.remove('hidden');
+
+    // Stop stats polling when not on dashboard
+    stopStatsPolling();
+}
+
+// Start polling for live stats updates
+function startStatsPolling() {
+    // Clear any existing interval
+    stopStatsPolling();
+
+    // Poll every 2 seconds for live stats
+    statsPollingInterval = setInterval(() => {
+        const token = localStorage.getItem('auth_token');
+
+        fetch(`${API_BASE_URL}/api/stats/live`, {
+            method: 'GET',
+            headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+            credentials: 'include'
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(stats => {
+            // Update stats UI silently (without animation)
+            updateStatsUIQuiet(stats);
+        })
+        .catch(error => {
+            console.debug('Error polling stats:', error);
+            // Don't alert or stop polling - just log for debugging
+        });
+    }, 2000); // Poll every 2 seconds
+
+    console.log('Started stats polling');
+}
+
+// Stop stats polling
+function stopStatsPolling() {
+    if (statsPollingInterval) {
+        clearInterval(statsPollingInterval);
+        statsPollingInterval = null;
+        console.log('Stopped stats polling');
+    }
+}
+
+// Update stats UI without animation (for polling)
+function updateStatsUIQuiet(stats) {
+    // Directly update text without animation for smoother polling
+    if (totalScanned) {
+        totalScanned.textContent = stats.total_scanned || 0;
+    }
+    if (totalUnsubscribed) {
+        totalUnsubscribed.textContent = stats.total_unsubscribed || 0;
+    }
+    if (timeSaved) {
+        timeSaved.textContent = stats.time_saved || 0;
+    }
+
+    // Update progress bar based on processing state
+    let progress = 0;
+    if (isProcessing && totalEmailsToProcess > 0) {
+        progress = Math.round(((stats.total_scanned || 0) / totalEmailsToProcess) * 100);
+    } else if (stats.total_scanned > 0) {
+        progress = Math.round((stats.total_unsubscribed / stats.total_scanned) * 100);
+    }
+
+    if (progressBar && progressPercentage) {
+        progressBar.style.width = `${Math.min(progress, 100)}%`;
+        progressPercentage.textContent = `${Math.min(progress, 100)}%`;
+    }
+
+    // Update emails processed/remaining
+    if (isProcessing && totalEmailsToProcess > 0) {
+        const remaining = Math.max(0, totalEmailsToProcess - (stats.total_scanned || 0));
+        if (emailsProcessed) emailsProcessed.textContent = `${stats.total_scanned || 0} processed`;
+        if (emailsRemaining) emailsRemaining.textContent = `${remaining} remaining`;
+    } else {
+        if (emailsProcessed) emailsProcessed.textContent = `${stats.total_scanned || 0} processed`;
+        if (emailsRemaining) emailsRemaining.textContent = `0 remaining`;
+    }
 }
 
 // Load user data (stats and activities)
@@ -1053,9 +1139,9 @@ function applySelectedActions() {
     // Disable apply button and show processing
     const applyBtn = document.getElementById('apply-actions');
     applyBtn.disabled = true;
-    applyBtn.textContent = 'Applying...';
+    applyBtn.textContent = 'Starting...';
 
-    // Call apply API
+    // Call apply API (async)
     const token = localStorage.getItem('auth_token');
 
     fetch(`${API_BASE_URL}/api/unsubscribe/apply`, {
@@ -1071,30 +1157,139 @@ function applySelectedActions() {
     })
     .then(response => response.json())
     .then(data => {
-        if (data.success) {
+        if (data.success && data.operation_id) {
             lastOperationId = data.operation_id;
 
             // Close preview modal
             document.getElementById('preview-modal').classList.remove('active');
 
-            // Show undo toast
-            showUndoToast(data.summary);
+            // Start polling for operation status
+            pollOperationStatus(data.operation_id);
 
-            // Reload user data
-            loadUserData();
+            // Show a toast that processing has started
+            showProcessingToast(items.length);
         } else {
-            throw new Error(data.error || 'Failed to apply actions');
+            throw new Error(data.error || 'Failed to start processing');
         }
     })
     .catch(error => {
-        console.error('Error applying actions:', error);
-        alert(`Failed to apply actions: ${error.message}`);
-    })
-    .finally(() => {
+        console.error('Error starting actions:', error);
+        alert(`Failed to start processing: ${error.message}`);
+
         // Reset button
         applyBtn.disabled = false;
         applyBtn.textContent = 'Apply Actions';
     });
+}
+
+function pollOperationStatus(operation_id) {
+    const token = localStorage.getItem('auth_token');
+    let pollCount = 0;
+    const maxPolls = 300; // 5 minutes max (300 * 1 second)
+
+    const pollInterval = setInterval(async () => {
+        pollCount++;
+
+        if (pollCount > maxPolls) {
+            clearInterval(pollInterval);
+            console.error('Polling timeout reached');
+            alert('Operation is taking longer than expected. Please refresh the page to check status.');
+            return;
+        }
+
+        try {
+            const statusResponse = await fetch(
+                `${API_BASE_URL}/api/unsubscribe/status/${operation_id}`,
+                {
+                    headers: { 'Authorization': `Bearer ${token}` },
+                    credentials: 'include'
+                }
+            );
+
+            if (!statusResponse.ok) {
+                throw new Error(`Status check failed: ${statusResponse.status}`);
+            }
+
+            const status = await statusResponse.json();
+
+            // Update progress UI
+            updateProgressUI(status);
+
+            // Update dashboard stats in real-time
+            if (status.stats) {
+                updateStatsUI(status.stats);
+            }
+
+            // Check if operation completed or failed
+            if (status.status === 'completed') {
+                clearInterval(pollInterval);
+
+                // Show success toast with summary
+                showUndoToast({
+                    successful: status.successful || 0,
+                    failed: status.failed || 0,
+                    filters_created: status.filters_created || 0
+                });
+
+                // Reload full user data
+                loadUserData();
+            } else if (status.status === 'error') {
+                clearInterval(pollInterval);
+
+                // Show error
+                alert(`Operation failed: ${status.error || 'Unknown error'}`);
+
+                // Reload user data
+                loadUserData();
+            }
+
+        } catch (error) {
+            console.error('Error polling operation status:', error);
+            clearInterval(pollInterval);
+            alert('Failed to check operation status. Please refresh the page.');
+        }
+    }, 1000); // Poll every second
+}
+
+function updateProgressUI(status) {
+    // Update progress bar and text
+    const progressBar = document.getElementById('progress-bar');
+    const progressPercentage = document.getElementById('progress-percentage');
+    const emailsProcessed = document.getElementById('emails-processed');
+    const emailsRemaining = document.getElementById('emails-remaining');
+
+    if (status.total > 0) {
+        const progress = Math.round((status.progress / status.total) * 100);
+        progressBar.style.width = `${progress}%`;
+        progressPercentage.textContent = `${progress}%`;
+        emailsProcessed.textContent = `${status.progress} processed`;
+        emailsRemaining.textContent = `${status.total - status.progress} remaining`;
+    }
+
+    // Update progress header with current item
+    const progressHeader = document.querySelector('.progress-header h3');
+    if (progressHeader && status.current_item) {
+        progressHeader.textContent = `Processing - ${status.current_item}`;
+    }
+}
+
+function showProcessingToast(itemCount) {
+    const toast = document.getElementById('undo-toast');
+    const message = document.getElementById('toast-message');
+
+    message.textContent = `Processing ${itemCount} items in background. Check the dashboard for progress.`;
+    toast.style.display = 'block';
+
+    // Hide undo button during processing
+    const undoBtn = document.getElementById('undo-button');
+    if (undoBtn) {
+        undoBtn.style.display = 'none';
+    }
+
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
+        toast.style.display = 'none';
+    }, 5000);
 }
 
 function showUndoToast(summary) {
@@ -1112,9 +1307,12 @@ function showUndoToast(summary) {
     message.textContent = text;
     toast.style.display = 'block';
 
-    // Add undo button listener
+    // Show undo button
     const undoBtn = document.getElementById('undo-button');
-    undoBtn.onclick = () => undoLastOperation();
+    if (undoBtn) {
+        undoBtn.style.display = 'inline-block';
+        undoBtn.onclick = () => undoLastOperation();
+    }
 
     // Auto-hide after 10 seconds
     setTimeout(() => {

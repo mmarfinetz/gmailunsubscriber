@@ -14,6 +14,9 @@ import secrets
 import uuid
 from datetime import datetime, timedelta
 from functools import wraps
+from threading import Thread, Lock
+from queue import Queue
+from collections import defaultdict
 
 from flask import Flask, request, jsonify, redirect, g, session
 import jwt
@@ -155,6 +158,14 @@ user_stats = {}
 user_activities = {}
 oauth_states = set()
 oauth_states_with_timestamp = {}  # Store states with timestamps for cleanup
+
+# Background task processing infrastructure
+processing_operations = {}  # operation_id -> operation status dict
+processing_lock = Lock()
+
+# Stats caching infrastructure
+stats_cache = {}  # user_id -> (stats_dict, timestamp)
+CACHE_TTL_SECONDS = 60  # Cache stats for 60 seconds
 
 # Initialize database and load existing data
 try:
@@ -580,11 +591,15 @@ def oauth2callback():
                 loaded_stats = db_manager.load_user_stats()
                 if user_id in loaded_stats:
                     user_stats[user_id] = loaded_stats[user_id]
+                    # Ensure emails_deleted field exists
+                    if 'emails_deleted' not in user_stats[user_id]:
+                        user_stats[user_id]['emails_deleted'] = 0
                     oauth_logger.info(f"Loaded existing stats for user: {user_id}")
                 else:
                     user_stats[user_id] = {
                         "total_scanned": 0,
                         "total_unsubscribed": 0,
+                        "emails_deleted": 0,
                         "time_saved": 0,
                         "domains_unsubscribed": {}
                     }
@@ -594,6 +609,7 @@ def oauth2callback():
                 user_stats[user_id] = {
                     "total_scanned": 0,
                     "total_unsubscribed": 0,
+                    "emails_deleted": 0,
                     "time_saved": 0,
                     "domains_unsubscribed": {}
                 }
@@ -739,14 +755,13 @@ def debug_env():
 @app.route('/api/stats', methods=['GET'])
 @auth_required
 def get_stats():
-    """Get the user's unsubscription statistics."""
+    """Get the user's unsubscription statistics (with caching)."""
     user_id = g.get('user_id')
 
-    return jsonify(user_stats.get(user_id, {
-        "total_scanned": 0,
-        "total_unsubscribed": 0,
-        "time_saved": 0
-    }))
+    # Use cached stats for better performance
+    stats = get_stats_cached(user_id)
+
+    return jsonify(stats)
 
 @app.route('/api/stats/history', methods=['GET'])
 @auth_required
@@ -778,6 +793,17 @@ def get_stats_history():
             "success": False,
             "error": str(e)
         }), 500
+
+@app.route('/api/stats/live', methods=['GET'])
+@auth_required
+def get_live_stats():
+    """Get real-time stats for polling. Optimized for frequent requests."""
+    user_id = g.get('user_id')
+
+    # Always use cached stats for live endpoint
+    stats = get_stats_cached(user_id)
+
+    return jsonify(stats)
 
 @app.route('/api/activities', methods=['GET'])
 @auth_required
@@ -927,32 +953,24 @@ def preview_unsubscribe_candidates():
             "candidates": []
         }), 500
 
-@app.route('/api/unsubscribe/apply', methods=['POST'])
-@auth_required
-def apply_unsubscribe_actions():
-    """Apply unsubscribe actions to selected emails."""
-    user_id = g.get('user_id')
-    data = request.get_json(force=True) or {}
-
-    items = data.get('items', [])
-    should_create_auto_archive_filter = bool(data.get('create_auto_archive_filter', False))
-
-    if not items:
-        return jsonify({"error": "No items provided"}), 400
-
+def process_unsubscribe_async(operation_id, user_id, items, create_filters, credentials):
+    """Background worker for unsubscribe operations."""
     try:
-        # Defensive check: ensure helper function is callable
-        import inspect
-        if not callable(create_sender_auto_archive_filter):
-            logger.error("create_sender_auto_archive_filter is not callable - name collision detected")
-            return jsonify({
-                "error": "Internal configuration error",
-                "error_type": "name_collision",
-                "message": "Helper function is not callable"
-            }), 500
+        logger.info(f"Starting async processing for operation {operation_id}")
+
+        # Initialize operation status
+        update_operation_status(operation_id, {
+            'status': 'processing',
+            'progress': 0,
+            'total': len(items),
+            'current_item': None,
+            'errors': [],
+            'successful': 0,
+            'failed': 0
+        })
 
         # Build Gmail service
-        creds = Credentials.from_authorized_user_info(g.credentials, SCOPES)
+        creds = Credentials.from_authorized_user_info(credentials, SCOPES)
         if not creds.valid and creds.refresh_token:
             creds.refresh(Request())
         service = build(API_SERVICE_NAME, API_VERSION, credentials=creds)
@@ -960,8 +978,7 @@ def apply_unsubscribe_actions():
         # Get/create UNSUBSCRIBED label
         unsubscribed_label_id = ensure_label_exists(service, 'UNSUBSCRIBED')
 
-        # Generate operation ID for undo
-        operation_id = str(uuid.uuid4())
+        # Generate operation payload for undo
         operation_payload = {
             'items': [],
             'filter_ids': [],
@@ -971,12 +988,19 @@ def apply_unsubscribe_actions():
         processed_senders = set()
         success_count = 0
         failed_count = 0
+        emails_deleted_count = 0
 
-        for item in items:
+        for idx, item in enumerate(items):
             msg_id = item.get('id')
             action = item.get('action')
 
             try:
+                # Update progress
+                update_operation_status(operation_id, {
+                    'progress': idx + 1,
+                    'current_item': f"Processing {idx + 1}/{len(items)}"
+                })
+
                 # Get full message for metadata
                 message = service.users().messages().get(
                     userId='me',
@@ -994,7 +1018,6 @@ def apply_unsubscribe_actions():
                                    f"Unsubscribed via RFC 8058 from {metadata['sender_name']}",
                                    metadata)
                         user_stats[user_id]["total_unsubscribed"] += 1
-                        user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
 
                         # Track domain statistics
                         domain = metadata.get("domain", "unknown")
@@ -1011,7 +1034,7 @@ def apply_unsubscribe_actions():
 
                         success_count += 1
 
-                        # Optionally also label and archive the email
+                        # Label and archive the email
                         if unsubscribed_label_id:
                             service.users().messages().modify(
                                 userId='me',
@@ -1031,26 +1054,38 @@ def apply_unsubscribe_actions():
                                    metadata)
                         failed_count += 1
 
-                elif action == 'label_archive':
-                    # Label and archive the email
-                    if unsubscribed_label_id:
-                        service.users().messages().modify(
-                            userId='me',
-                            id=msg_id,
-                            body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
-                        ).execute()
+                elif action == 'label_archive' or action == 'delete':
+                    # Label and archive or delete the email
+                    if action == 'delete':
+                        # Trash the email
+                        service.users().messages().trash(userId='me', id=msg_id).execute()
+                        emails_deleted_count += 1
+
+                        add_activity(user_id, "success",
+                                   f"Deleted email from {metadata['sender_name']}",
+                                   metadata)
+                    else:
+                        # Label and archive
+                        if unsubscribed_label_id:
+                            service.users().messages().modify(
+                                userId='me',
+                                id=msg_id,
+                                body={'removeLabelIds': ['INBOX'], 'addLabelIds': [unsubscribed_label_id]}
+                            ).execute()
 
                         add_activity(user_id, "success",
                                    f"Labeled and archived email from {metadata['sender_name']}",
                                    metadata)
-                        success_count += 1
 
-                        operation_payload['items'].append({
-                            'message_id': msg_id,
-                            'removed_labels': ['INBOX'],
-                            'added_labels': [unsubscribed_label_id],
-                            'one_click_unsub': False
-                        })
+                    success_count += 1
+
+                    operation_payload['items'].append({
+                        'message_id': msg_id,
+                        'removed_labels': ['INBOX'] if action != 'delete' else [],
+                        'added_labels': [unsubscribed_label_id] if unsubscribed_label_id and action != 'delete' else [],
+                        'one_click_unsub': False,
+                        'deleted': action == 'delete'
+                    })
 
                 # Track sender for filter creation
                 if metadata['sender_email']:
@@ -1058,20 +1093,33 @@ def apply_unsubscribe_actions():
 
                 # Update stats
                 user_stats[user_id]["total_scanned"] += 1
-                save_stats_to_db(user_id)
+
+                # Invalidate cache after each successful operation
+                invalidate_stats_cache(user_id)
 
             except Exception as e:
                 logger.error(f"Error processing item {msg_id}: {e}")
                 add_activity(user_id, "error", f"Failed to process email: {str(e)}")
                 failed_count += 1
+                update_operation_status(operation_id, {
+                    'errors': get_operation_status(operation_id)['errors'] + [str(e)]
+                })
 
         # Create filters if requested
-        if should_create_auto_archive_filter and processed_senders:
+        if create_filters and processed_senders:
             for sender in processed_senders:
                 filter_id = create_sender_auto_archive_filter(service, sender, unsubscribed_label_id)
                 if filter_id:
                     operation_payload['filter_ids'].append(filter_id)
                     add_activity(user_id, "info", f"Created auto-archive filter for {sender}")
+
+        # Update emails_deleted stat
+        if 'emails_deleted' not in user_stats[user_id]:
+            user_stats[user_id]['emails_deleted'] = 0
+        user_stats[user_id]['emails_deleted'] += emails_deleted_count
+
+        # Calculate time saved using the new formula
+        user_stats[user_id]["time_saved"] = calculate_time_saved(user_stats[user_id]["total_unsubscribed"])
 
         # Save operation for undo
         db_manager = get_db_manager()
@@ -1081,20 +1129,65 @@ def apply_unsubscribe_actions():
         # Save updated stats to database with snapshot
         save_stats_to_db(user_id, save_snapshot=True)
 
+        # Invalidate cache one final time
+        invalidate_stats_cache(user_id)
+
         # Final summary
         add_activity(user_id, "success",
                    f"Applied actions: {success_count} successful, {failed_count} failed")
 
+        # Mark operation as completed
+        update_operation_status(operation_id, {
+            'status': 'completed',
+            'progress': len(items),
+            'successful': success_count,
+            'failed': failed_count,
+            'filters_created': len(operation_payload['filter_ids']),
+            'operation_id': operation_id
+        })
+
+        logger.info(f"Completed async processing for operation {operation_id}")
+
+    except Exception as e:
+        logger.error(f"Error in async processing for operation {operation_id}: {e}")
+        update_operation_status(operation_id, {
+            'status': 'error',
+            'error': str(e)
+        })
+
+@app.route('/api/unsubscribe/apply', methods=['POST'])
+@auth_required
+def apply_unsubscribe_actions():
+    """Apply unsubscribe actions to selected emails (async with polling)."""
+    user_id = g.get('user_id')
+    data = request.get_json(force=True) or {}
+
+    items = data.get('items', [])
+    should_create_auto_archive_filter = bool(data.get('create_auto_archive_filter', False))
+
+    if not items:
+        return jsonify({"error": "No items provided"}), 400
+
+    try:
+        # Generate operation ID
+        operation_id = str(uuid.uuid4())
+
+        # Start background processing thread
+        thread = Thread(
+            target=process_unsubscribe_async,
+            args=(operation_id, user_id, items, should_create_auto_archive_filter, g.credentials),
+            daemon=True
+        )
+        thread.start()
+
+        # Return immediately with operation ID and poll URL
         return jsonify({
             "success": True,
             "operation_id": operation_id,
-            "summary": {
-                "processed": success_count + failed_count,
-                "successful": success_count,
-                "failed": failed_count,
-                "filters_created": len(operation_payload['filter_ids'])
-            }
-        })
+            "status": "started",
+            "poll_url": f"/api/unsubscribe/status/{operation_id}",
+            "message": "Processing started in background. Use poll_url to check status."
+        }), 202  # 202 Accepted - processing started
 
     except Exception as e:
         logger.error(f"Error in apply endpoint: {e}")
@@ -1105,9 +1198,40 @@ def apply_unsubscribe_actions():
         return jsonify({
             "error": error_msg,
             "error_type": error_type,
-            "message": f"Failed to apply actions: {error_msg}",
+            "message": f"Failed to start background processing: {error_msg}",
             "where": "apply_unsubscribe_actions"
         }), 500
+
+@app.route('/api/unsubscribe/status/<operation_id>', methods=['GET'])
+@auth_required
+def get_unsubscribe_operation_status(operation_id):
+    """Get the status of a background unsubscribe operation."""
+    user_id = g.get('user_id')
+
+    # Get operation status
+    status = get_operation_status(operation_id)
+
+    if not status:
+        return jsonify({
+            "error": "Operation not found",
+            "operation_id": operation_id
+        }), 404
+
+    # Include current stats in response for real-time dashboard updates
+    current_stats = get_stats_cached(user_id)
+
+    return jsonify({
+        "operation_id": operation_id,
+        "status": status.get('status', 'unknown'),
+        "progress": status.get('progress', 0),
+        "total": status.get('total', 0),
+        "current_item": status.get('current_item', None),
+        "successful": status.get('successful', 0),
+        "failed": status.get('failed', 0),
+        "errors": status.get('errors', []),
+        "filters_created": status.get('filters_created', 0),
+        "stats": current_stats  # Include updated stats
+    })
 
 @app.route('/api/unsubscribe/undo', methods=['POST'])
 @auth_required
@@ -1560,7 +1684,7 @@ def save_all_data_to_db():
         if db_manager:
             stats_success = db_manager.save_user_stats(user_stats)
             activities_success = db_manager.save_user_activities(user_activities)
-            
+
             if stats_success and activities_success:
                 logger.info("Successfully saved all data to database")
             else:
@@ -1569,6 +1693,66 @@ def save_all_data_to_db():
             logger.debug("Database manager not available for bulk save")
     except Exception as e:
         logger.error(f"Error saving all data to database: {e}")
+
+def get_stats_cached(user_id):
+    """Get user stats from cache or database with TTL."""
+    global stats_cache
+
+    # Check cache first
+    if user_id in stats_cache:
+        cached_stats, cached_time = stats_cache[user_id]
+        age_seconds = (datetime.now() - cached_time).total_seconds()
+
+        if age_seconds < CACHE_TTL_SECONDS:
+            logger.debug(f"Serving stats from cache for user {user_id} (age: {age_seconds:.1f}s)")
+            return cached_stats
+
+    # Cache miss or expired - get from memory
+    stats = user_stats.get(user_id, {
+        "total_scanned": 0,
+        "total_unsubscribed": 0,
+        "emails_deleted": 0,
+        "time_saved": 0
+    })
+
+    # Update cache
+    stats_cache[user_id] = (stats, datetime.now())
+
+    return stats
+
+def invalidate_stats_cache(user_id):
+    """Invalidate cached stats for a user."""
+    global stats_cache
+    if user_id in stats_cache:
+        del stats_cache[user_id]
+        logger.debug(f"Invalidated stats cache for user {user_id}")
+
+def calculate_time_saved(total_unsubscribed):
+    """
+    Calculate time saved based on realistic email processing time.
+
+    Factors:
+    - Average time to manually find unsubscribe link: 30 seconds
+    - Average time to navigate unsubscribe flow: 45 seconds
+    - Average time to verify unsubscription: 15 seconds
+    Total: 90 seconds (1.5 minutes) per email
+    """
+    return int(total_unsubscribed * 1.5)
+
+def update_operation_status(operation_id, status_update):
+    """Thread-safe update of operation status."""
+    global processing_operations
+    with processing_lock:
+        if operation_id in processing_operations:
+            processing_operations[operation_id].update(status_update)
+        else:
+            processing_operations[operation_id] = status_update
+
+def get_operation_status(operation_id):
+    """Thread-safe retrieval of operation status."""
+    global processing_operations
+    with processing_lock:
+        return processing_operations.get(operation_id, None)
 
 def ensure_label_exists(service, label_name):
     """Ensure a Gmail label exists, create it if it doesn't."""
@@ -1612,15 +1796,18 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
         user_stats[user_id] = {
             "total_scanned": 0,
             "total_unsubscribed": 0,
+            "emails_deleted": 0,
             "time_saved": 0,
             "domains_unsubscribed": {}  # Track unsubscriptions by domain
         }
         logger.info(f"Initialized stats for user: {user_id}")
     else:
         logger.info(f"Using existing stats for user: {user_id}")
-        # Ensure domains_unsubscribed exists for older sessions
+        # Ensure domains_unsubscribed and emails_deleted exists for older sessions
         if "domains_unsubscribed" not in user_stats[user_id]:
             user_stats[user_id]["domains_unsubscribed"] = {}
+        if "emails_deleted" not in user_stats[user_id]:
+            user_stats[user_id]["emails_deleted"] = 0
     
     # Initialize user activities if not exists
     if user_id not in user_activities:
@@ -1739,8 +1926,7 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
             if unsubscribed:
                 try:
                     user_stats[user_id]["total_unsubscribed"] += 1
-                    user_stats[user_id]["time_saved"] += 2  # Assume 2 minutes saved per unsubscription
-                    
+
                     # Track domain statistics
                     domain = metadata.get("domain", "unknown")
                     if domain:
@@ -1753,7 +1939,10 @@ def process_unsubscriptions(user_id, query, max_emails, creds_data):
                         user_stats[user_id]["domains_unsubscribed"][domain]["count"] += 1
                         if metadata.get("sender_email"):
                             user_stats[user_id]["domains_unsubscribed"][domain]["emails"].add(metadata.get("sender_email"))
-                    
+
+                    # Calculate time saved using the new realistic formula
+                    user_stats[user_id]["time_saved"] = calculate_time_saved(user_stats[user_id]["total_unsubscribed"])
+
                     logger.debug(f"Updated unsubscribe stats for user {user_id}")
 
                     # Save updated stats to database with snapshot
